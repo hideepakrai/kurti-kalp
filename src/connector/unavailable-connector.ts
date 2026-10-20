@@ -82,4 +82,44 @@ export class UnavailableStorefrontConnector implements StorefrontConnector {
   async createOrder(): Promise<never> {
     throw this.unavailableError();
   }
+
+  async lookupOrder(): Promise<never> {
+    throw this.unavailableError();
+  }
+
+  async submitSupportInquiry(): Promise<never> {
+    throw this.unavailableError();
+  }
+
+  async checkExchangeEligibility(): Promise<never> {
+    throw this.unavailableError();
+  }
+
+  async submitExchangeRequest(): Promise<never> {
+    throw this.unavailableError();
+  }
+
+  async getCustomerSession(): Promise<never> {
+    throw this.unavailableError();
+  }
+
+  async listCustomerOrders(): Promise<never> {
+    throw this.unavailableError();
+  }
+
+  async getCustomerOrder(): Promise<never> {
+    throw this.unavailableError();
+  }
+
+  async listCustomerAddresses(): Promise<never> {
+    throw this.unavailableError();
+  }
+
+  async listSavedItems(): Promise<never> {
+    throw this.unavailableError();
+  }
+
+  async listProductReviews(): Promise<never> {
+    throw this.unavailableError();
+  }
 }

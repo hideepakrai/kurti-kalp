@@ -3,9 +3,9 @@
  * 1. Domain & Money minor-unit unit tests
  * 2. Hardened URL query parameter sanitization unit tests
  * 3. Explicit Runtime Modes (demo, connected, unavailable) & UnavailableStorefrontConnector tests
- * 4. HttpStorefrontConnector contract tests (same-origin enforcement, cookie credentials, timeout, abort, 503 mapping)
- * 5. Express Storefront BFF (/api/storefront/v1/*) live HTTP integration tests
- * 6. End-to-End Customer Journeys (Catalog, Search, Variant Matrix, Cart Revision, Checkout Quote Expiry & Idempotency)
+ * 4. HttpStorefrontConnector contract tests (same-origin enforcement, cookie credentials, GET deduplication, safe GET retry, timeout, abort, 503 mapping)
+ * 5. Express Storefront BFF (/api/storefront/v1/*) live HTTP integration & security header tests
+ * 6. End-to-End Customer Journeys & Customer Care Adapters (Catalog, Search, Variant Matrix, Cart Revision, Checkout Quote Expiry, Idempotency, Lookup, Support, Exchange, Reviews)
  * 7. Dynamic Merchandising Slots & WCAG Contrast / Security Boundary audit
  */
 
@@ -123,7 +123,7 @@ async function runTests() {
   console.log('✓ 2. Explicit modes & UnavailableStorefrontConnector honesty tests passed');
 
   // ---------------------------------------------------------------------------
-  // 3. HttpStorefrontConnector Contract Tests (Same-Origin, Cookies, Abort, Timeout)
+  // 3. HttpStorefrontConnector Contract Tests (Same-Origin, Cookies, Deduplication, Retry, Abort, Timeout)
   // ---------------------------------------------------------------------------
   let externalOriginRejected = false;
   try {
@@ -136,13 +136,16 @@ async function runTests() {
     'HttpStorefrontConnector rejects non-same-origin base paths'
   );
 
-  // Verify credentials: 'same-origin' and timeout handling via mock fetch
+  // Verify credentials: 'include', X-Correlation-Id header, and concurrent GET deduplication
   let capturedInit: RequestInit | undefined;
+  let getFetchCallCount = 0;
   const mockFetchConnector = new HttpStorefrontConnector({
     basePath: '/api/storefront/v1',
     defaultTimeoutMs: 50,
     fetchImpl: async (_input, init) => {
+      getFetchCallCount += 1;
       capturedInit = init;
+      await new Promise((r) => setTimeout(r, 10));
       return new Response(JSON.stringify(buildStorefrontCapabilities('connected')), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -150,11 +153,52 @@ async function runTests() {
     },
   });
 
-  const fetchedCaps = await mockFetchConnector.getCapabilities();
-  assert(fetchedCaps.mode === 'connected', 'HttpStorefrontConnector parses typed capabilities');
+  const [fetchedCaps1, fetchedCaps2] = await Promise.all([
+    mockFetchConnector.getCapabilities(),
+    mockFetchConnector.getCapabilities(),
+  ]);
   assert(
-    capturedInit?.credentials === 'same-origin',
-    'HttpStorefrontConnector always sends credentials: same-origin'
+    fetchedCaps1.mode === 'connected' && fetchedCaps2.mode === 'connected',
+    'HttpStorefrontConnector parses typed capabilities'
+  );
+  assert(
+    getFetchCallCount === 1,
+    'HttpStorefrontConnector deduplicates concurrent identical GET requests'
+  );
+  assert(
+    capturedInit?.credentials === 'include',
+    'HttpStorefrontConnector always sends credentials: include for HttpOnly cookies'
+  );
+  const sentHeaders = (capturedInit?.headers || {}) as Record<string, string>;
+  assert(
+    Boolean(sentHeaders['X-Correlation-Id']),
+    'HttpStorefrontConnector attaches X-Correlation-Id header'
+  );
+
+  // Verify safe retry on transient 502 error for idempotent GET
+  let retryAttempts = 0;
+  const retryConnector = new HttpStorefrontConnector({
+    basePath: '/api/storefront/v1',
+    maxReadRetries: 1,
+    retryDelayMs: 10,
+    fetchImpl: async () => {
+      retryAttempts += 1;
+      if (retryAttempts === 1) {
+        return new Response(
+          JSON.stringify({ error: { code: 'SERVER_ERROR', message: 'Transient 502' } }),
+          { status: 502, headers: { 'content-type': 'application/json' } }
+        );
+      }
+      return new Response(JSON.stringify(buildStorefrontCapabilities('connected')), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+  const retriedCaps = await retryConnector.getCapabilities();
+  assert(
+    retryAttempts === 2 && retriedCaps.mode === 'connected',
+    'HttpStorefrontConnector safely retries transient 502 error on idempotent GET'
   );
 
   // Verify AbortController cancellation
@@ -172,6 +216,7 @@ async function runTests() {
   const slowFetchConnector = new HttpStorefrontConnector({
     basePath: '/api/storefront/v1',
     defaultTimeoutMs: 30,
+    maxReadRetries: 0,
     fetchImpl: (_input, init) =>
       new Promise((_resolve, reject) => {
         init?.signal?.addEventListener('abort', () => {
@@ -188,7 +233,7 @@ async function runTests() {
     timeoutCaught = err instanceof StorefrontError && err.code === 'TIMEOUT_ERROR';
   }
   assert(timeoutCaught, 'HttpStorefrontConnector normalizes request timeouts to TIMEOUT_ERROR');
-  console.log('✓ 3. HttpStorefrontConnector unit tests (same-origin, cookies, abort, timeout) passed');
+  console.log('✓ 3. HttpStorefrontConnector unit tests (same-origin, cookies, dedup, retry, abort, timeout) passed');
 
   // ---------------------------------------------------------------------------
   // 4. Express Storefront BFF (/api/storefront/v1/*) Live Integration Tests
@@ -202,8 +247,14 @@ async function runTests() {
   const bffOrigin = `http://127.0.0.1:${port}`;
 
   try {
-    const healthRes = await fetch(`${bffOrigin}/api/storefront/v1/health`);
+    const healthRes = await fetch(`${bffOrigin}/api/storefront/v1/health`, {
+      headers: { 'X-Correlation-Id': 'corr_test_12345' },
+    });
     assert(healthRes.status === 200, 'BFF /health returns 200');
+    assert(
+      healthRes.headers.get('x-correlation-id') === 'corr_test_12345',
+      'BFF echoes X-Correlation-Id header'
+    );
     const setCookieHeader = healthRes.headers.get('set-cookie') || '';
     assert(
       setCookieHeader.includes('gayraa_sf_sid=') && setCookieHeader.includes('HttpOnly'),
@@ -213,6 +264,15 @@ async function runTests() {
     assert(
       healthJson.liveKalpConnected === false,
       'BFF /health honestly reports liveKalpConnected: false'
+    );
+
+    // Verify BFF rejects forbidden client tenant header (X-Tenant-DB)
+    const forbiddenRes = await fetch(`${bffOrigin}/api/storefront/v1/config`, {
+      headers: { 'X-Tenant-DB': 'injected_tenant_db' },
+    });
+    assert(
+      forbiddenRes.status === 400,
+      'BFF rejects client-supplied X-Tenant-DB header with HTTP 400'
     );
 
     // Connect HttpStorefrontConnector to live BFF via custom fetch forwarding to ephemeral port
@@ -231,7 +291,7 @@ async function runTests() {
     const bffNav = await bffHttpConnector.getNavigation();
     assert(bffNav.primary.length === 4, 'BFF /navigation returns primary navigation');
 
-    // Catalog, Cart, and Checkout endpoints on BFF must return 503 UPSTREAM_UNAVAILABLE
+    // Catalog, Cart, Checkout, and Customer endpoints on BFF must return 503 UPSTREAM_UNAVAILABLE
     let bffHomeUnavailable = false;
     try {
       await bffHttpConnector.getHomePage();
@@ -245,13 +305,27 @@ async function runTests() {
       bffHomeUnavailable,
       'BFF /home returns 503 UPSTREAM_UNAVAILABLE stub and never serves fake catalog data'
     );
+
+    let bffLookupUnavailable = false;
+    try {
+      await bffHttpConnector.lookupOrder({ orderReference: 'GAY-DEMO-1041' });
+    } catch (err) {
+      bffLookupUnavailable =
+        err instanceof StorefrontError &&
+        err.code === 'UPSTREAM_UNAVAILABLE' &&
+        err.statusCode === 503;
+    }
+    assert(
+      bffLookupUnavailable,
+      'BFF /orders/lookup returns 503 UPSTREAM_UNAVAILABLE until Kalp Business API is wired'
+    );
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
-  console.log('✓ 4. Express Storefront BFF (/api/storefront/v1/*) integration tests passed');
+  console.log('✓ 4. Express Storefront BFF (/api/storefront/v1/*) integration & security tests passed');
 
   // ---------------------------------------------------------------------------
-  // 5. End-to-End Customer Journeys & Dynamic Merchandising Slots (Demo Mode)
+  // 5. End-to-End Customer Journeys, Customer Care Adapters & Dynamic Merchandising Slots (Demo Mode)
   // ---------------------------------------------------------------------------
   const connector = new LocalMockStorefrontConnector({ latencyMs: 0, quoteTtlMs: 60_000 });
 
@@ -373,12 +447,61 @@ async function runTests() {
     'Idempotent order submission returns identical OrderResult with separated orderStatus and paymentStatus'
   );
 
-  const lookedUp = connector.getOrderByReference(order1.orderReference);
+  // Customer Care Adapter Contracts: lookupOrder, checkExchangeEligibility, submitExchangeRequest, submitSupportInquiry, listProductReviews
+  const lookedUp = await connector.lookupOrder({ orderReference: order1.orderReference });
   assert(
-    lookedUp?.orderReference === order1.orderReference,
-    'Guest order lookup finds demo order by reference'
+    lookedUp.orderReference === order1.orderReference,
+    'Guest order lookup finds demo order by reference via connector.lookupOrder'
   );
-  console.log('✓ 5. End-to-End customer journeys & dynamic merchandising tests passed');
+
+  const eligibility = await connector.checkExchangeEligibility({
+    orderReference: order1.orderReference,
+  });
+  assert(
+    eligibility.eligible === true &&
+      eligibility.windowDays === 3 &&
+      eligibility.refundsAllowed === false &&
+      eligibility.customerReturnShippingRequired === true,
+    '3-day exchange eligibility enforces GAYRAA policy rules'
+  );
+
+  const exchangeResult = await connector.submitExchangeRequest({
+    orderReference: order1.orderReference,
+    email: 'test@example.com',
+    reason: 'SIZE_FIT_ISSUE',
+    replacementSize: 'M',
+    confirmedWithin3Days: true,
+    confirmedUnusedWithTags: true,
+    confirmedCustomerReturnShipping: true,
+  });
+  assert(
+    exchangeResult.isDemoRecord === true && exchangeResult.orderReference === order1.orderReference,
+    'submitExchangeRequest creates a labelled demo exchange record'
+  );
+
+  const inquiryResult = await connector.submitSupportInquiry({
+    fullName: 'Test User',
+    email: 'test@example.com',
+    topic: 'EXPRESS_SHIPPING_INQUIRY',
+    message: 'Checking 3-day prepaid express delivery for PIN 302001.',
+  });
+  assert(
+    inquiryResult.isDemoRecord === true && inquiryResult.status === 'RECORDED_DEMO_ONLY',
+    'submitSupportInquiry returns labelled demo support record'
+  );
+
+  const reviews = await connector.listProductReviews(sareeProduct.id);
+  assert(
+    reviews.isDemoFixture === true && reviews.reviews.every((r) => r.isDemoFixture),
+    'listProductReviews returns explicitly labelled demo review fixtures'
+  );
+
+  const customerSession = await connector.getCustomerSession();
+  assert(
+    customerSession.authenticated === false && customerSession.sessionStatus === 'UNAUTHENTICATED',
+    'getCustomerSession honestly reports unauthenticated state without fake login'
+  );
+  console.log('✓ 5. End-to-End customer journeys, customer care adapters & dynamic merchandising tests passed');
 
   // ---------------------------------------------------------------------------
   // 6. Accessibility Contrast & Browser Security Boundary Audit

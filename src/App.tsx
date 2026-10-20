@@ -38,7 +38,14 @@ const CustomerRouteShells = React.lazy(() =>
       routeType,
       orderId,
     }: {
-      routeType: 'order-lookup' | 'account-orders' | 'support' | 'faq' | 'exchange' | 'saved';
+      routeType:
+        | 'order-lookup'
+        | 'account-orders'
+        | 'account-addresses'
+        | 'support'
+        | 'faq'
+        | 'exchange'
+        | 'saved';
       orderId?: string;
     }) {
       switch (routeType) {
@@ -46,6 +53,8 @@ const CustomerRouteShells = React.lazy(() =>
           return <m.OrderLookupRouteShell />;
         case 'account-orders':
           return <m.AccountOrdersRouteShell orderId={orderId} />;
+        case 'account-addresses':
+          return <m.AccountAddressesRouteShell />;
         case 'support':
           return <m.SupportRouteShell />;
         case 'faq':
@@ -109,6 +118,12 @@ function resolveRouteSeo(pathname: string, searchParams: URLSearchParams): {
     return {
       title: 'Customer Account Orders — GAYRAA',
       description: 'GAYRAA customer account order history and guest lookup assistance.',
+    };
+  }
+  if (pathname === '/account/addresses' || pathname === '/account/addresses/') {
+    return {
+      title: 'Saved Address Book — GAYRAA',
+      description: 'GAYRAA customer saved address book capability notice.',
     };
   }
   if (pathname === '/support') {
@@ -249,6 +264,10 @@ function StorefrontShell() {
         pathname.replace('/account/orders/', '').split('/')[0] || ''
       );
       return <CustomerRouteShells routeType="account-orders" orderId={orderId} />;
+    }
+
+    if (pathname === '/account/addresses' || pathname === '/account/addresses/') {
+      return <CustomerRouteShells routeType="account-addresses" />;
     }
 
     if (pathname === '/support') {

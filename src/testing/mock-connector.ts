@@ -40,6 +40,20 @@ import {
   StorefrontCapabilities,
   StorefrontConfig,
 } from '../domain/content';
+import {
+  CustomerAddressRecord,
+  CustomerOrderSummary,
+  CustomerSession,
+  ExchangeEligibilityQuery,
+  ExchangeEligibilityResult,
+  ExchangeRequestResult,
+  GuestOrderLookupInput,
+  ProductReviewsResult,
+  SavedItemsResult,
+  SubmitExchangeRequestInput,
+  SupportInquiryInput,
+  SupportInquiryResult,
+} from '../domain/customer';
 import { FieldValidationIssue, StorefrontError } from '../domain/errors';
 import { createMoney } from '../domain/money';
 import { DEMO_COLLECTIONS, DEMO_PRODUCTS, toProductSummary } from './fixtures/catalog-fixtures';
@@ -60,7 +74,14 @@ interface StoredIdempotentOrder {
 export interface MockConnectorSimulationOptions {
   latencyMs?: number;
   quoteTtlMs?: number;
-  forceNextError?: 'NETWORK_FAILURE' | 'CART_CONFLICT' | 'QUOTE_EXPIRED' | null;
+  forceNextError?:
+    | 'NETWORK_FAILURE'
+    | 'CART_CONFLICT'
+    | 'QUOTE_EXPIRED'
+    | 'RATE_LIMITED'
+    | 'SERVER_ERROR'
+    | 'SESSION_EXPIRED'
+    | null;
   heroVariantOverride?: HeroVariant | null;
 }
 
@@ -88,6 +109,88 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
       forceNextError: options?.forceNextError ?? null,
       heroVariantOverride: options?.heroVariantOverride ?? null,
     };
+    this.seedSampleDemoOrder();
+  }
+
+  private seedSampleDemoOrder(): void {
+    const sampleProduct = DEMO_PRODUCTS[0];
+    const sampleVariant = sampleProduct.variants[1] || sampleProduct.variants[0];
+    const sampleOrder: OrderResult = {
+      orderId: 'demo_ord_1041',
+      orderReference: 'GAY-DEMO-1041',
+      createdAt: '2026-10-20T10:30:00.000Z',
+      idempotencyKey: 'idem_sample_demo_1041',
+      quoteId: 'qt_sample_1041',
+      orderStatus: 'CREATED_DEMO_HOLD',
+      paymentStatus: 'PENDING_PAYMENT_INTENT_HANDOFF',
+      paymentMethodCode: 'PREPAID_INTENT',
+      paymentAction: {
+        type: 'PROVIDER_INTENT_PLACEHOLDER',
+        summary: 'Prepaid Payment Intent Pending (Stage A Demo Record)',
+        nextStepInstruction:
+          'In Connected Mode, Kalp Business Core links this order to a live payment provider intent. No payment has been captured.',
+        intentReference: 'pi_demo_kalp_1041',
+      },
+      contact: {
+        fullName: 'Ananya Sharma',
+        email: 'ananya.demo@example.com',
+        phone: '9876543210',
+      },
+      shippingAddress: {
+        recipientName: 'Ananya Sharma',
+        line1: '14 C-Scheme, Ashok Nagar',
+        city: 'Jaipur',
+        state: 'Rajasthan',
+        postalCode: '302001',
+        countryCode: 'IN',
+      },
+      shippingMethod: {
+        id: 'ship-standard-free',
+        title: 'Standard Pan-India Delivery (Free)',
+        dispatchEstimate: 'Dispatched within 48 hours from Jaipur warehouse',
+        transitEstimate: 'Approx. 5–7 working days after dispatch',
+        fee: createMoney(0, 'INR', 2),
+        eligible: true,
+      },
+      items: [
+        {
+          lineItemId: 'line-demo-1041',
+          productId: sampleProduct.id,
+          productSlug: sampleProduct.slug,
+          productTitle: sampleProduct.title,
+          variantId: sampleVariant.id,
+          sku: sampleVariant.sku,
+          selectedOptions: { ...sampleVariant.selectedOptions },
+          quantity: 1,
+          maxAllowedQuantity: 5,
+          unitPrice: structuredClone(sampleVariant.price),
+          lineSubtotal: structuredClone(sampleVariant.price),
+          image: structuredClone(sampleProduct.primaryImage),
+          availability: 'IN_STOCK',
+          setSummary: sampleProduct.setSummary,
+          isDemoFixture: true,
+        },
+      ],
+      totals: {
+        itemsSubtotal: structuredClone(sampleVariant.compareAtPrice || sampleVariant.price),
+        discountTotal: createMoney(
+          Math.max(
+            0,
+            (sampleVariant.compareAtPrice?.amountMinor ?? sampleVariant.price.amountMinor) -
+              sampleVariant.price.amountMinor
+          ),
+          'INR',
+          2
+        ),
+        shippingFee: createMoney(0, 'INR', 2),
+        taxTotal: createMoney(Math.round((sampleVariant.price.amountMinor * 12) / 112), 'INR', 2),
+        payableTotal: structuredClone(sampleVariant.price),
+      },
+      isDemoOrder: true,
+      demoDisclaimer:
+        'DEMO MODE RECORD: This order reference exists only in local demo memory to demonstrate separated orderStatus and paymentStatus.',
+    };
+    this.ordersByRef.set(sampleOrder.orderReference, sampleOrder);
   }
 
   public setSimulationOptions(partial: Partial<MockConnectorSimulationOptions>): void {
@@ -144,6 +247,34 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
         code: 'NETWORK_FAILURE',
         message: 'Unable to reach storefront service. Please check your connection and retry.',
         recoverable: true,
+      });
+    }
+    if (this.simOptions.forceNextError === 'RATE_LIMITED') {
+      this.simOptions.forceNextError = null;
+      throw new StorefrontError({
+        code: 'RATE_LIMITED',
+        message: 'Too many requests. Please wait a moment and retry.',
+        recoverable: true,
+        statusCode: 429,
+        retryAfterSeconds: 2,
+      });
+    }
+    if (this.simOptions.forceNextError === 'SERVER_ERROR') {
+      this.simOptions.forceNextError = null;
+      throw new StorefrontError({
+        code: 'SERVER_ERROR',
+        message: 'Storefront service encountered a temporary internal error. Please retry.',
+        recoverable: true,
+        statusCode: 500,
+      });
+    }
+    if (this.simOptions.forceNextError === 'SESSION_EXPIRED') {
+      this.simOptions.forceNextError = null;
+      throw new StorefrontError({
+        code: 'SESSION_EXPIRED',
+        message: 'Your customer session has expired. Please re-verify or use guest order lookup.',
+        recoverable: true,
+        statusCode: 440,
       });
     }
   }
@@ -984,6 +1115,259 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
     }
 
     return issues;
+  }
+
+  async lookupOrder(
+    input: GuestOrderLookupInput,
+    options?: ConnectorRequestOptions
+  ): Promise<OrderResult> {
+    await this.delayAndCheckForcedError(options);
+    const ref = (input.orderReference || '').trim().toUpperCase();
+    if (!ref) {
+      throw new StorefrontError({
+        code: 'VALIDATION_ERROR',
+        message: 'Enter a valid Order Reference (for example, GAY-DEMO-1041).',
+        recoverable: true,
+        fieldIssues: [{ field: 'orderReference', message: 'Order Reference is required.' }],
+      });
+    }
+    const found = this.ordersByRef.get(ref);
+    if (!found) {
+      throw new StorefrontError({
+        code: 'NOT_FOUND',
+        message: `No demo order found for reference "${ref}". Place a demo order in Checkout or inspect GAY-DEMO-1041.`,
+        recoverable: true,
+        statusCode: 404,
+      });
+    }
+    return structuredClone(found);
+  }
+
+  async submitSupportInquiry(
+    input: SupportInquiryInput,
+    options?: ConnectorRequestOptions
+  ): Promise<SupportInquiryResult> {
+    await this.delayAndCheckForcedError(options);
+    const issues: FieldValidationIssue[] = [];
+    if (!input.fullName || input.fullName.trim().length < 2) {
+      issues.push({ field: 'fullName', message: 'Enter your full name.' });
+    }
+    if (!input.email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.email.trim())) {
+      issues.push({ field: 'email', message: 'Enter a valid email address.' });
+    }
+    if (!input.message || input.message.trim().length < 10) {
+      issues.push({
+        field: 'message',
+        message: 'Please provide at least 10 characters describing your inquiry.',
+      });
+    }
+    if (issues.length > 0) {
+      throw new StorefrontError({
+        code: 'VALIDATION_ERROR',
+        message: 'Please complete all required inquiry fields.',
+        recoverable: true,
+        fieldIssues: issues,
+      });
+    }
+    return {
+      inquiryReference: `INQ-DEMO-${Date.now().toString().slice(-5)}`,
+      receivedAt: new Date().toISOString(),
+      status: 'RECORDED_DEMO_ONLY',
+      summaryMessage:
+        'Demo Mode Notice: Inquiry formatted in local memory only. No live email or support ticket was sent. For real assistance, contact gayraabysnm@gmail.com or +91 7300006707.',
+      isDemoRecord: true,
+    };
+  }
+
+  async checkExchangeEligibility(
+    query: ExchangeEligibilityQuery,
+    options?: ConnectorRequestOptions
+  ): Promise<ExchangeEligibilityResult> {
+    await this.delayAndCheckForcedError(options);
+    const ref = (query.orderReference || '').trim().toUpperCase();
+    if (!ref) {
+      throw new StorefrontError({
+        code: 'VALIDATION_ERROR',
+        message: 'Order Reference is required to check 3-day exchange eligibility.',
+        recoverable: true,
+      });
+    }
+    const found = this.ordersByRef.get(ref);
+    if (!found) {
+      throw new StorefrontError({
+        code: 'NOT_FOUND',
+        message: `Order "${ref}" was not found in demo memory.`,
+        recoverable: true,
+        statusCode: 404,
+      });
+    }
+    return {
+      orderReference: ref,
+      eligible: true,
+      windowDays: 3,
+      deliveredWithinWindow: true,
+      alreadyExchanged: false,
+      allowedReasons: ['SIZE_FIT_ISSUE', 'DEFECTIVE_OR_DAMAGED_ITEM'],
+      customerReturnShippingRequired: true,
+      refundsAllowed: false,
+      policySummary:
+        'Eligible strictly for size issues or defective/damaged items within 3 days of delivery. One exchange per product. Customer-arranged return shipping to Jaipur.',
+      isDemoRecord: true,
+    };
+  }
+
+  async submitExchangeRequest(
+    input: SubmitExchangeRequestInput,
+    options?: ConnectorRequestOptions
+  ): Promise<ExchangeRequestResult> {
+    await this.delayAndCheckForcedError(options);
+    const issues: FieldValidationIssue[] = [];
+    if (!input.orderReference || input.orderReference.trim().length < 4) {
+      issues.push({ field: 'orderReference', message: 'Enter your valid Order ID.' });
+    }
+    if (!input.email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.email.trim())) {
+      issues.push({ field: 'email', message: 'Enter the email address used for the order.' });
+    }
+    if (!input.confirmedWithin3Days || !input.confirmedUnusedWithTags) {
+      issues.push({
+        field: 'confirmedWithin3Days',
+        message: 'Confirm the 3-day delivery window and original unused tag condition.',
+      });
+    }
+    if (!input.confirmedCustomerReturnShipping) {
+      issues.push({
+        field: 'confirmedCustomerReturnShipping',
+        message: 'Confirm customer-arranged return shipping to Jaipur (no reverse pickup).',
+      });
+    }
+    if (issues.length > 0) {
+      throw new StorefrontError({
+        code: 'VALIDATION_ERROR',
+        message: 'Please review the highlighted exchange requirements before continuing.',
+        recoverable: true,
+        fieldIssues: issues,
+      });
+    }
+
+    return {
+      exchangeReference: `EX-DEMO-${Date.now().toString().slice(-5)}`,
+      orderReference: input.orderReference.trim().toUpperCase(),
+      createdAt: new Date().toISOString(),
+      status: 'PENDING_DEMO_REVIEW',
+      reason: input.reason,
+      replacementSize: input.replacementSize,
+      returnShippingInstruction:
+        'Ship unused garment with original tags to: ROHIT SHARMA SHREE NARAYAN MANUFACTURER, Plot No. 1–2, Jaipur Gate, Sanganer, Jaipur 302029, Rajasthan.',
+      isDemoRecord: true,
+      demoDisclaimer:
+        'DEMO MODE NOTICE: No live exchange ticket or return shipment was created. In production, initiate within 3 days of delivery via gayraabysnm@gmail.com or +91 7300006707.',
+    };
+  }
+
+  async getCustomerSession(options?: ConnectorRequestOptions): Promise<CustomerSession> {
+    await this.delayAndCheckForcedError(options);
+    return {
+      authenticated: false,
+      sessionStatus: 'UNAUTHENTICATED',
+      isDemoSession: true,
+    };
+  }
+
+  async listCustomerOrders(options?: ConnectorRequestOptions): Promise<CustomerOrderSummary[]> {
+    await this.delayAndCheckForcedError(options);
+    throw new StorefrontError({
+      code: 'UNAUTHORIZED',
+      message:
+        'Customer account sign-in is not enabled in this storefront configuration. Use Guest Order Reference Lookup (/order-lookup) to inspect demo orders.',
+      recoverable: true,
+      statusCode: 401,
+    });
+  }
+
+  async getCustomerOrder(
+    orderId: string,
+    options?: ConnectorRequestOptions
+  ): Promise<CustomerOrderSummary> {
+    await this.delayAndCheckForcedError(options);
+    const found = this.ordersByRef.get(orderId.trim().toUpperCase());
+    if (found) return structuredClone(found);
+    throw new StorefrontError({
+      code: 'UNAUTHORIZED',
+      message: `Authenticated order detail for "${orderId}" requires an active Kalp customer session. Use /order-lookup for guest reference lookup.`,
+      recoverable: true,
+      statusCode: 401,
+    });
+  }
+
+  async listCustomerAddresses(options?: ConnectorRequestOptions): Promise<CustomerAddressRecord[]> {
+    await this.delayAndCheckForcedError(options);
+    throw new StorefrontError({
+      code: 'UNAUTHORIZED',
+      message:
+        'Saved address book requires an authenticated Kalp customer session. Guest checkout remains available without registration.',
+      recoverable: true,
+      statusCode: 401,
+    });
+  }
+
+  async listSavedItems(options?: ConnectorRequestOptions): Promise<SavedItemsResult> {
+    await this.delayAndCheckForcedError(options);
+    return {
+      items: [],
+      updatedAt: new Date().toISOString(),
+      isDemoRecord: true,
+    };
+  }
+
+  async listProductReviews(
+    productId: string,
+    options?: ConnectorRequestOptions
+  ): Promise<ProductReviewsResult> {
+    await this.delayAndCheckForcedError(options);
+    const product = DEMO_PRODUCTS.find((p) => p.id === productId || p.slug === productId);
+    if (!product) {
+      return {
+        productId,
+        averageRating: 0,
+        totalCount: 0,
+        reviews: [],
+        canSubmitReview: false,
+        isDemoFixture: true,
+      };
+    }
+
+    return {
+      productId: product.id,
+      averageRating: 4.8,
+      totalCount: 2,
+      canSubmitReview: false,
+      isDemoFixture: true,
+      reviews: [
+        {
+          id: `rev-demo-${product.id}-1`,
+          productId: product.id,
+          authorName: 'Meera K. (Jaipur — Demo Fixture)',
+          rating: 5,
+          title: 'Breathable weave and accurate garment measurements',
+          comment: `The ${product.fabricTag} drape and stitch finish match the product-specific measurement table accurately. (Demo Review Fixture)`,
+          verifiedPurchase: true,
+          createdAt: '2026-10-12T09:00:00.000Z',
+          isDemoFixture: true,
+        },
+        {
+          id: `rev-demo-${product.id}-2`,
+          productId: product.id,
+          authorName: 'Roshni V. (Mumbai — Demo Fixture)',
+          rating: 5,
+          title: 'Graceful silhouette for festive gatherings',
+          comment:
+            'Comfortable full-day wear and dispatched within 48 hours from Jaipur. (Demo Review Fixture)',
+          verifiedPurchase: true,
+          createdAt: '2026-10-08T14:20:00.000Z',
+          isDemoFixture: true,
+        },
+      ],
+    };
   }
 }
 

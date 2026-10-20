@@ -3,7 +3,11 @@
  * Separates observed business attributes from configurable policy summaries.
  */
 
-import { StorefrontCapabilities, StorefrontConfig, StorefrontRuntimeMode } from '../domain/content';
+import type {
+  StorefrontCapabilities,
+  StorefrontConfig,
+  StorefrontRuntimeMode,
+} from '../domain/content';
 
 export function buildStorefrontCapabilities(mode: StorefrontRuntimeMode): StorefrontCapabilities {
   const isDemo = mode === 'demo';
@@ -18,7 +22,9 @@ export function buildStorefrontCapabilities(mode: StorefrontRuntimeMode): Storef
     orderLookupEnabled: isDemo, // Enabled in demo mode for order reference lookup; gated in connected until upstream ready
     selfServeExchangeEnabled: isDemo, // Guided 3-day exchange request shell enabled in demo
     customerAccountsEnabled: false, // No mandatory registration or heavy account dashboard
+    customerAddressesEnabled: false, // Gated until Kalp customer profile API is mapped
     wishlistEnabled: false, // Hidden from primary header; /saved route shows explicit capability notice
+    productReviewsEnabled: isDemo, // Labelled demo review fixtures on PDP in demo mode; gated in connected mode
     supportedHeroVariants: ['layered-typographic', 'split-editorial'],
   };
 }

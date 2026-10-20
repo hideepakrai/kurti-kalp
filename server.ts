@@ -1,6 +1,9 @@
 /**
  * Full-Stack Storefront Server (`server.ts`).
  *
+ * Portable across both `node server.ts` (Node 22 native TypeScript execution),
+ * `tsx server.ts` (dev server), and `node dist/server.mjs` (bundled JS production output).
+ *
  * Mounts:
  * 1. Same-origin Storefront BFF (`/api/storefront/v1/*`)
  * 2. Vite middleware in development OR built static assets (`dist/`) with SPA history fallback in production.
@@ -10,7 +13,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import express from 'express';
-import { createStorefrontBffRouter } from './server/storefront-bff';
+import { createStorefrontBffRouter } from './server/storefront-bff.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -32,7 +35,7 @@ export async function createServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.resolve(__dirname, 'dist');
+    const distPath = path.basename(__dirname) === 'dist' ? __dirname : path.resolve(__dirname, 'dist');
     const indexHtmlPath = path.join(distPath, 'index.html');
 
     app.use(

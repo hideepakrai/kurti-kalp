@@ -3,7 +3,10 @@
  *
  * Rules Enforced:
  * - Calls ONLY same-origin `/api/storefront/v1/*` endpoints (rejects external origins).
- * - Sends `credentials: 'same-origin'` (HttpOnly session cookies; zero bearer tokens or secrets in browser).
+ * - Sends `credentials: 'include'` (HttpOnly session cookies; zero bearer tokens or secrets in browser).
+ * - Sends and tracks `X-Correlation-Id` on every request.
+ * - Deduplicates concurrent in-flight idempotent GET requests so duplicate calls never hit the BFF.
+ * - Safe retry ONLY for idempotent GET reads on transient network/timeout/429/502/504 errors.
  * - Implements request timeouts, external AbortSignal support, typed response validation,
  *   and normalized `StorefrontError` mapping.
  * - Never falls back to demo fixtures on failure or 503 UPSTREAM_UNAVAILABLE.
@@ -36,6 +39,20 @@ import {
   StorefrontConfig,
 } from '../domain/content';
 import {
+  CustomerAddressRecord,
+  CustomerOrderSummary,
+  CustomerSession,
+  ExchangeEligibilityQuery,
+  ExchangeEligibilityResult,
+  ExchangeRequestResult,
+  GuestOrderLookupInput,
+  ProductReviewsResult,
+  SavedItemsResult,
+  SubmitExchangeRequestInput,
+  SupportInquiryInput,
+  SupportInquiryResult,
+} from '../domain/customer';
+import {
   FieldValidationIssue,
   StorefrontError,
   StorefrontErrorCode,
@@ -46,6 +63,8 @@ import { ConnectorRequestOptions, StorefrontConnector } from './storefront-conne
 export interface HttpStorefrontConnectorConfig {
   basePath?: string;
   defaultTimeoutMs?: number;
+  maxReadRetries?: number;
+  retryDelayMs?: number;
   fetchImpl?: typeof fetch;
 }
 
@@ -54,26 +73,66 @@ interface BffErrorEnvelope {
     code?: StorefrontErrorCode;
     message?: string;
     recoverable?: boolean;
+    correlationId?: string;
+    retryAfterSeconds?: number;
     fieldIssues?: FieldValidationIssue[];
     latestCartRevision?: string;
   };
 }
 
+function generateCorrelationId(): string {
+  return `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function buildCatalogQueryString(
+  query: Partial<CollectionQuery & SearchQuery>,
+  includeSearchQ = false
+): string {
+  const params = new URLSearchParams();
+  if (includeSearchQ) {
+    params.set('q', query.q || '');
+  }
+  if (query.sizes?.length) params.set('sizes', query.sizes.join(','));
+  if (query.fabrics?.length) params.set('fabrics', query.fabrics.join(','));
+  if (typeof query.maxPriceMinor === 'number') {
+    params.set('maxPriceMinor', String(query.maxPriceMinor));
+  }
+  if (query.inStockOnly) params.set('inStockOnly', 'true');
+  if (query.sort) params.set('sort', query.sort);
+  if (query.page) params.set('page', String(query.page));
+  if (query.pageSize) params.set('pageSize', String(query.pageSize));
+  return params.toString();
+}
+
 export class HttpStorefrontConnector implements StorefrontConnector {
   private readonly basePath: string;
   private readonly defaultTimeoutMs: number;
+  private readonly maxReadRetries: number;
+  private readonly retryDelayMs: number;
   private readonly fetchFn: typeof fetch;
+  private readonly inFlightGetRequests = new Map<string, Promise<unknown>>();
 
   constructor(config?: HttpStorefrontConnectorConfig) {
     const basePath = config?.basePath ?? '/api/storefront/v1';
-    if (!basePath.startsWith('/api/storefront/v1')) {
+    if (!basePath.startsWith('/api/storefront/v1') || /^https?:\/\//i.test(basePath)) {
       throw new Error(
         `HttpStorefrontConnector requires same-origin "/api/storefront/v1" prefix (received "${basePath}").`
       );
     }
     this.basePath = basePath.replace(/\/$/, '');
     this.defaultTimeoutMs = config?.defaultTimeoutMs ?? 8000;
+    this.maxReadRetries = config?.maxReadRetries ?? 1;
+    this.retryDelayMs = config?.retryDelayMs ?? 120;
     this.fetchFn = config?.fetchImpl ?? globalThis.fetch.bind(globalThis);
+  }
+
+  private isTransientReadError(err: StorefrontError): boolean {
+    return (
+      err.code === 'NETWORK_FAILURE' ||
+      err.code === 'TIMEOUT_ERROR' ||
+      err.code === 'RATE_LIMITED' ||
+      err.code === 'SERVER_ERROR'
+    );
   }
 
   private async requestJson<T>(
@@ -82,11 +141,82 @@ export class HttpStorefrontConnector implements StorefrontConnector {
     options?: ConnectorRequestOptions,
     validator?: (data: unknown) => T
   ): Promise<T> {
-    if (!path.startsWith('/')) {
-      throw new Error(`Relative path must start with "/" (received "${path}")`);
+    if (!path.startsWith('/') || path.startsWith('//')) {
+      throw new Error(`Relative path must start with a single "/" (received "${path}")`);
     }
 
+    const method = (init.method || 'GET').toUpperCase();
+    const isIdempotentRead = method === 'GET';
     const url = `${this.basePath}${path}`;
+
+    // Deduplicate concurrent identical GET requests when no caller-specific AbortSignal is attached
+    if (isIdempotentRead && !options?.signal) {
+      const existing = this.inFlightGetRequests.get(url);
+      if (existing) {
+        return (await existing) as T;
+      }
+      const promise = this.executeWithSafeRetry<T>(url, method, init, options, validator).finally(
+        () => {
+          this.inFlightGetRequests.delete(url);
+        }
+      );
+      this.inFlightGetRequests.set(url, promise);
+      return promise;
+    }
+
+    return this.executeWithSafeRetry<T>(url, method, init, options, validator);
+  }
+
+  private async executeWithSafeRetry<T>(
+    url: string,
+    method: string,
+    init: RequestInit,
+    options?: ConnectorRequestOptions,
+    validator?: (data: unknown) => T
+  ): Promise<T> {
+    const isIdempotentRead = method === 'GET';
+    const allowedRetries = isIdempotentRead ? this.maxReadRetries : 0;
+    let attempt = 0;
+
+    while (true) {
+      try {
+        return await this.executeSingleAttempt<T>(url, method, init, options, validator);
+      } catch (err) {
+        const sfErr = err instanceof StorefrontError ? err : null;
+        if (
+          attempt < allowedRetries &&
+          sfErr &&
+          this.isTransientReadError(sfErr) &&
+          !options?.signal?.aborted
+        ) {
+          attempt += 1;
+          const waitMs = sfErr.retryAfterSeconds
+            ? Math.min(sfErr.retryAfterSeconds * 1000, 1500)
+            : this.retryDelayMs * attempt;
+          await new Promise((resolve) => setTimeout(resolve, waitMs));
+          continue;
+        }
+        throw err;
+      }
+    }
+  }
+
+  private async executeSingleAttempt<T>(
+    url: string,
+    method: string,
+    init: RequestInit,
+    options?: ConnectorRequestOptions,
+    validator?: (data: unknown) => T
+  ): Promise<T> {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      throw new StorefrontError({
+        code: 'OFFLINE_ERROR',
+        message: 'Your device appears to be offline. Please check your internet connection and retry.',
+        recoverable: true,
+      });
+    }
+
+    const correlationId = options?.correlationId || generateCorrelationId();
     const timeoutMs = options?.timeoutMs ?? this.defaultTimeoutMs;
     const timeoutController = new AbortController();
     let timedOut = false;
@@ -96,7 +226,6 @@ export class HttpStorefrontConnector implements StorefrontConnector {
       timeoutController.abort();
     }, timeoutMs);
 
-    // Combine external AbortSignal with timeout signal
     const onExternalAbort = () => timeoutController.abort();
     if (options?.signal) {
       if (options.signal.aborted) {
@@ -105,6 +234,7 @@ export class HttpStorefrontConnector implements StorefrontConnector {
           code: 'REQUEST_ABORTED',
           message: 'Request was cancelled.',
           recoverable: true,
+          correlationId,
         });
       }
       options.signal.addEventListener('abort', onExternalAbort, { once: true });
@@ -113,14 +243,21 @@ export class HttpStorefrontConnector implements StorefrontConnector {
     try {
       const response = await this.fetchFn(url, {
         ...init,
-        credentials: 'same-origin',
+        method,
+        credentials: 'include',
         signal: timeoutController.signal,
         headers: {
           Accept: 'application/json',
+          'X-Correlation-Id': correlationId,
           ...(init.body ? { 'Content-Type': 'application/json' } : {}),
           ...(init.headers || {}),
         },
       });
+
+      const responseCorrelationId =
+        response.headers.get('x-correlation-id') || correlationId;
+      const retryAfterHeader = response.headers.get('retry-after');
+      const retryAfterSeconds = retryAfterHeader ? Number(retryAfterHeader) : undefined;
 
       let payload: unknown = null;
       const contentType = response.headers.get('content-type') || '';
@@ -129,14 +266,20 @@ export class HttpStorefrontConnector implements StorefrontConnector {
       }
 
       if (!response.ok) {
-        throw this.normalizeHttpError(response.status, payload);
+        throw this.normalizeHttpError(
+          response.status,
+          payload,
+          responseCorrelationId,
+          Number.isFinite(retryAfterSeconds) ? retryAfterSeconds : undefined
+        );
       }
 
-      if ( payload === null || typeof payload !== 'object') {
+      if (payload === null || typeof payload !== 'object') {
         throw new StorefrontError({
-          code: 'NETWORK_FAILURE',
+          code: 'SERVER_ERROR',
           message: 'Received malformed non-JSON response from storefront BFF.',
           statusCode: response.status,
+          correlationId: responseCorrelationId,
           recoverable: true,
         });
       }
@@ -151,6 +294,7 @@ export class HttpStorefrontConnector implements StorefrontConnector {
           code: 'TIMEOUT_ERROR',
           message: `Storefront request timed out after ${timeoutMs}ms.`,
           recoverable: true,
+          correlationId,
         });
       }
       if (options?.signal?.aborted || (err instanceof Error && err.name === 'AbortError')) {
@@ -158,6 +302,7 @@ export class HttpStorefrontConnector implements StorefrontConnector {
           code: 'REQUEST_ABORTED',
           message: 'Request was cancelled.',
           recoverable: true,
+          correlationId,
         });
       }
       throw new StorefrontError({
@@ -167,6 +312,7 @@ export class HttpStorefrontConnector implements StorefrontConnector {
             ? `Network request failed: ${err.message}`
             : 'Unable to reach same-origin storefront BFF.',
         recoverable: true,
+        correlationId,
       });
     } finally {
       clearTimeout(timer);
@@ -176,20 +322,33 @@ export class HttpStorefrontConnector implements StorefrontConnector {
     }
   }
 
-  private normalizeHttpError(status: number, payload: unknown): StorefrontError {
+  private normalizeHttpError(
+    status: number,
+    payload: unknown,
+    correlationId: string,
+    retryAfterSeconds?: number
+  ): StorefrontError {
     const envelope = (payload && typeof payload === 'object' ? payload : {}) as BffErrorEnvelope;
     const errObj = envelope.error;
 
     const fallbackCode: StorefrontErrorCode =
-      status === 404
-        ? 'NOT_FOUND'
-        : status === 409
-          ? 'CART_CONFLICT'
-          : status === 422 || status === 400
-            ? 'VALIDATION_ERROR'
-            : status === 503 || status === 502
-              ? 'UPSTREAM_UNAVAILABLE'
-              : 'NETWORK_FAILURE';
+      status === 401
+        ? 'UNAUTHORIZED'
+        : status === 440
+          ? 'SESSION_EXPIRED'
+          : status === 404
+            ? 'NOT_FOUND'
+            : status === 409
+              ? 'CART_CONFLICT'
+              : status === 429
+                ? 'RATE_LIMITED'
+                : status === 422 || status === 400
+                  ? 'VALIDATION_ERROR'
+                  : status === 503
+                    ? 'UPSTREAM_UNAVAILABLE'
+                    : status >= 500
+                      ? 'SERVER_ERROR'
+                      : 'NETWORK_FAILURE';
 
     return new StorefrontError({
       code: errObj?.code ?? fallbackCode,
@@ -197,16 +356,24 @@ export class HttpStorefrontConnector implements StorefrontConnector {
         errObj?.message ??
         (status === 503
           ? 'Storefront backend is currently unavailable or awaiting Kalp Business Core configuration.'
-          : `Storefront API returned HTTP ${status}.`),
+          : status === 429
+            ? 'Too many requests. Please wait a moment and try again.'
+            : status === 401
+              ? 'Customer authentication is required to access this resource.'
+              : status === 440
+                ? 'Your customer session has expired. Please sign in again.'
+                : `Storefront API returned HTTP ${status}.`),
       recoverable: errObj?.recoverable ?? true,
       statusCode: status,
+      correlationId: errObj?.correlationId ?? correlationId,
+      retryAfterSeconds: errObj?.retryAfterSeconds ?? retryAfterSeconds,
       fieldIssues: errObj?.fieldIssues,
       latestCartRevision: errObj?.latestCartRevision,
     });
   }
 
   private assertObject<T>(val: unknown, label: string): T {
-    if (!val || typeof val !== 'object') {
+    if (!val || typeof val !== 'object' || Array.isArray(val)) {
       throw new StorefrontError({
         code: 'VALIDATION_ERROR',
         message: `Invalid ${label} payload returned by BFF.`,
@@ -269,18 +436,7 @@ export class HttpStorefrontConnector implements StorefrontConnector {
     query: CollectionQuery,
     options?: ConnectorRequestOptions
   ): Promise<CollectionResult> {
-    const params = new URLSearchParams();
-    if (query.sizes?.length) params.set('sizes', query.sizes.join(','));
-    if (query.fabrics?.length) params.set('fabrics', query.fabrics.join(','));
-    if (typeof query.maxPriceMinor === 'number') {
-      params.set('maxPriceMinor', String(query.maxPriceMinor));
-    }
-    if (query.inStockOnly) params.set('inStockOnly', 'true');
-    if (query.sort) params.set('sort', query.sort);
-    if (query.page) params.set('page', String(query.page));
-    if (query.pageSize) params.set('pageSize', String(query.pageSize));
-
-    const qs = params.toString();
+    const qs = buildCatalogQueryString(query, false);
     return this.requestJson(
       `/collections/${encodeURIComponent(query.slug)}${qs ? `?${qs}` : ''}`,
       { method: 'GET' },
@@ -293,20 +449,9 @@ export class HttpStorefrontConnector implements StorefrontConnector {
     query: SearchQuery,
     options?: ConnectorRequestOptions
   ): Promise<CollectionResult> {
-    const params = new URLSearchParams();
-    params.set('q', query.q || '');
-    if (query.sizes?.length) params.set('sizes', query.sizes.join(','));
-    if (query.fabrics?.length) params.set('fabrics', query.fabrics.join(','));
-    if (typeof query.maxPriceMinor === 'number') {
-      params.set('maxPriceMinor', String(query.maxPriceMinor));
-    }
-    if (query.inStockOnly) params.set('inStockOnly', 'true');
-    if (query.sort) params.set('sort', query.sort);
-    if (query.page) params.set('page', String(query.page));
-    if (query.pageSize) params.set('pageSize', String(query.pageSize));
-
+    const qs = buildCatalogQueryString(query, true);
     return this.requestJson(
-      `/search?${params.toString()}`,
+      `/search?${qs}`,
       { method: 'GET' },
       options,
       (data) => this.assertObject<CollectionResult>(data, 'CollectionResult')
@@ -417,6 +562,133 @@ export class HttpStorefrontConnector implements StorefrontConnector {
         assertValidMoney(order.totals.payableTotal, 'OrderResult.totals.payableTotal');
         return order;
       }
+    );
+  }
+
+  async lookupOrder(
+    input: GuestOrderLookupInput,
+    options?: ConnectorRequestOptions
+  ): Promise<OrderResult> {
+    return this.requestJson(
+      '/orders/lookup',
+      {
+        method: 'POST',
+        body: JSON.stringify(input),
+      },
+      options,
+      (data) => this.assertObject<OrderResult>(data, 'OrderResult')
+    );
+  }
+
+  async submitSupportInquiry(
+    input: SupportInquiryInput,
+    options?: ConnectorRequestOptions
+  ): Promise<SupportInquiryResult> {
+    return this.requestJson(
+      '/support/inquiries',
+      {
+        method: 'POST',
+        body: JSON.stringify(input),
+      },
+      options,
+      (data) => this.assertObject<SupportInquiryResult>(data, 'SupportInquiryResult')
+    );
+  }
+
+  async checkExchangeEligibility(
+    query: ExchangeEligibilityQuery,
+    options?: ConnectorRequestOptions
+  ): Promise<ExchangeEligibilityResult> {
+    const params = new URLSearchParams({ orderReference: query.orderReference });
+    if (query.emailOrPhone) params.set('emailOrPhone', query.emailOrPhone);
+    return this.requestJson(
+      `/exchanges/eligibility?${params.toString()}`,
+      { method: 'GET' },
+      options,
+      (data) => this.assertObject<ExchangeEligibilityResult>(data, 'ExchangeEligibilityResult')
+    );
+  }
+
+  async submitExchangeRequest(
+    input: SubmitExchangeRequestInput,
+    options?: ConnectorRequestOptions
+  ): Promise<ExchangeRequestResult> {
+    return this.requestJson(
+      '/exchanges',
+      {
+        method: 'POST',
+        body: JSON.stringify(input),
+      },
+      options,
+      (data) => this.assertObject<ExchangeRequestResult>(data, 'ExchangeRequestResult')
+    );
+  }
+
+  async getCustomerSession(options?: ConnectorRequestOptions): Promise<CustomerSession> {
+    return this.requestJson(
+      '/customer/session',
+      { method: 'GET' },
+      options,
+      (data) => this.assertObject<CustomerSession>(data, 'CustomerSession')
+    );
+  }
+
+  async listCustomerOrders(options?: ConnectorRequestOptions): Promise<CustomerOrderSummary[]> {
+    return this.requestJson('/customer/orders', { method: 'GET' }, options, (data) => {
+      if (!Array.isArray(data)) {
+        throw new StorefrontError({
+          code: 'VALIDATION_ERROR',
+          message: 'Expected array of customer orders from BFF.',
+          recoverable: true,
+        });
+      }
+      return data as CustomerOrderSummary[];
+    });
+  }
+
+  async getCustomerOrder(
+    orderId: string,
+    options?: ConnectorRequestOptions
+  ): Promise<CustomerOrderSummary> {
+    return this.requestJson(
+      `/customer/orders/${encodeURIComponent(orderId)}`,
+      { method: 'GET' },
+      options,
+      (data) => this.assertObject<CustomerOrderSummary>(data, 'CustomerOrderSummary')
+    );
+  }
+
+  async listCustomerAddresses(options?: ConnectorRequestOptions): Promise<CustomerAddressRecord[]> {
+    return this.requestJson('/customer/addresses', { method: 'GET' }, options, (data) => {
+      if (!Array.isArray(data)) {
+        throw new StorefrontError({
+          code: 'VALIDATION_ERROR',
+          message: 'Expected array of customer addresses from BFF.',
+          recoverable: true,
+        });
+      }
+      return data as CustomerAddressRecord[];
+    });
+  }
+
+  async listSavedItems(options?: ConnectorRequestOptions): Promise<SavedItemsResult> {
+    return this.requestJson(
+      '/customer/saved',
+      { method: 'GET' },
+      options,
+      (data) => this.assertObject<SavedItemsResult>(data, 'SavedItemsResult')
+    );
+  }
+
+  async listProductReviews(
+    productId: string,
+    options?: ConnectorRequestOptions
+  ): Promise<ProductReviewsResult> {
+    return this.requestJson(
+      `/products/${encodeURIComponent(productId)}/reviews`,
+      { method: 'GET' },
+      options,
+      (data) => this.assertObject<ProductReviewsResult>(data, 'ProductReviewsResult')
     );
   }
 }

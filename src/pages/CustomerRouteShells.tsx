@@ -1,17 +1,18 @@
 /**
- * CustomerRouteShells — Lean customer-facing route shells gated behind capability flags:
- * - /order-lookup
- * - /account/orders
- * - /account/orders/:id
- * - /support
- * - /faq
- * - /exchange/request
- * - /saved
+ * CustomerRouteShells — Lean customer-facing route shells gated behind capability flags
+ * and wired to the StorefrontConnector contract:
+ * - /order-lookup (connector.lookupOrder)
+ * - /account/orders & /account/orders/:id (connector.getCustomerSession / listCustomerOrders / getCustomerOrder)
+ * - /account/addresses (connector.listCustomerAddresses)
+ * - /support (connector.submitSupportInquiry + direct atelier contact)
+ * - /faq (Shipping, 3-day exchange, sizing, and fabric care FAQ)
+ * - /exchange/request (connector.checkExchangeEligibility + connector.submitExchangeRequest)
+ * - /saved (connector.listSavedItems)
  *
- * Keeps unavailable features clearly unavailable (no fake login, no heavy dashboard).
+ * Keeps unavailable features clearly unavailable (no fake login, no heavy dashboard, no mandatory sign-up).
  */
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   CheckCircle2,
   Clock,
@@ -22,96 +23,29 @@ import {
   PackageSearch,
   Phone,
   RefreshCw,
-  ShieldAlert,
-  Sparkles,
+  Send,
   Truck,
 } from 'lucide-react';
 import { OrderResult } from '../domain/checkout';
-import { createMoney, formatMoney } from '../domain/money';
+import {
+  CustomerAddressRecord,
+  ExchangeEligibilityResult,
+  ExchangeReasonCode,
+  ExchangeRequestResult,
+  SupportInquiryInput,
+  SupportInquiryResult,
+} from '../domain/customer';
+import { isStorefrontError } from '../domain/errors';
+import { formatMoney } from '../domain/money';
 import { useStorefront } from '../integration/StorefrontProvider';
 import { navigateTo } from '../integration/hooks/useRouter';
 import { Breadcrumbs } from '../components/layout/Breadcrumbs';
 import { EmptyStatePanel } from '../components/ui/StateFeedback';
 
-const SAMPLE_DEMO_ORDER: OrderResult = {
-  orderId: 'demo_ord_1041',
-  orderReference: 'GAY-DEMO-1041',
-  createdAt: '2026-10-20T10:30:00.000Z',
-  idempotencyKey: 'idem_sample_demo_1041',
-  quoteId: 'qt_sample_1041',
-  orderStatus: 'CREATED_DEMO_HOLD',
-  paymentStatus: 'PENDING_PAYMENT_INTENT_HANDOFF',
-  paymentMethodCode: 'PREPAID_INTENT',
-  paymentAction: {
-    type: 'PROVIDER_INTENT_PLACEHOLDER',
-    summary: 'Prepaid Payment Intent Pending (Stage A Demo Record)',
-    nextStepInstruction:
-      'In Connected Mode, Kalp Business Core links this order to a live payment provider intent. No payment has been captured.',
-    intentReference: 'pi_demo_kalp_1041',
-  },
-  contact: {
-    fullName: 'Ananya Sharma',
-    email: 'ananya.demo@example.com',
-    phone: '9876543210',
-  },
-  shippingAddress: {
-    recipientName: 'Ananya Sharma',
-    line1: '14 C-Scheme, Ashok Nagar',
-    city: 'Jaipur',
-    state: 'Rajasthan',
-    postalCode: '302001',
-    countryCode: 'IN',
-  },
-  shippingMethod: {
-    id: 'ship-standard-free',
-    title: 'Standard Pan-India Delivery (Free)',
-    dispatchEstimate: 'Dispatched within 48 hours from Jaipur warehouse',
-    transitEstimate: 'Approx. 5–7 working days after dispatch',
-    fee: createMoney(0, 'INR', 2),
-    eligible: true,
-  },
-  items: [
-    {
-      lineItemId: 'line-demo-1',
-      productId: 'prod-gulnaar-anarkali',
-      productSlug: 'gulnaar-handblock-anarkali-set',
-      productTitle: 'Gulnaar Sindoor Mulmul Handblock Anarkali Set',
-      variantId: 'var-gulnaar-m',
-      sku: 'GAY-ANK-001-M',
-      selectedOptions: { Size: 'M' },
-      quantity: 1,
-      maxAllowedQuantity: 5,
-      unitPrice: createMoney(349000, 'INR', 2),
-      lineSubtotal: createMoney(349000, 'INR', 2),
-      image: {
-        id: 'img-sample',
-        url: '/assets/demo/lookbook-anarkali-maroon.svg',
-        alt: 'Gulnaar Anarkali Set',
-        width: 900,
-        height: 1200,
-        aspectRatio: '3:4',
-        isDemoFixture: true,
-      },
-      availability: 'IN_STOCK',
-      setSummary: '3-Piece Set: Kalidar Anarkali Kurta, Cambric Palazzos & Kota Doria Dupatta',
-      isDemoFixture: true,
-    },
-  ],
-  totals: {
-    itemsSubtotal: createMoney(429000, 'INR', 2),
-    discountTotal: createMoney(80000, 'INR', 2),
-    shippingFee: createMoney(0, 'INR', 2),
-    taxTotal: createMoney(37393, 'INR', 2),
-    payableTotal: createMoney(349000, 'INR', 2),
-  },
-  isDemoOrder: true,
-  demoDisclaimer:
-    'DEMO MODE RECORD: This order reference exists only in local demo memory to demonstrate separated orderStatus and paymentStatus.',
-};
-
 export function OrderLookupRouteShell() {
-  const { capabilities, config, devController, runtimeMode } = useStorefront();
+  const { capabilities, config, connector, runtimeMode } = useStorefront();
   const [referenceInput, setReferenceInput] = useState('');
+  const [lookupLoading, setLookupLoading] = useState(false);
   const [lookupError, setLookupError] = useState<string | null>(null);
   const [foundOrder, setFoundOrder] = useState<OrderResult | null>(null);
 
@@ -162,29 +96,33 @@ export function OrderLookupRouteShell() {
     );
   }
 
-  const handleLookup = (e: React.FormEvent) => {
-    e.preventDefault();
+  const runLookup = async (orderRef: string) => {
     setLookupError(null);
-    const trimmed = referenceInput.trim().toUpperCase();
+    const trimmed = orderRef.trim().toUpperCase();
     if (!trimmed) {
       setLookupError('Please enter a Demo Order Reference (for example, GAY-DEMO-1041).');
       return;
     }
 
-    const sessionMatch = devController?.getOrderByReference(trimmed) ?? null;
-    if (sessionMatch) {
-      setFoundOrder(sessionMatch);
-      return;
+    setLookupLoading(true);
+    try {
+      const result = await connector.lookupOrder({ orderReference: trimmed });
+      setFoundOrder(result);
+    } catch (err) {
+      setFoundOrder(null);
+      setLookupError(
+        isStorefrontError(err)
+          ? err.message
+          : `Unable to look up order reference "${trimmed}".`
+      );
+    } finally {
+      setLookupLoading(false);
     }
-    if (trimmed === SAMPLE_DEMO_ORDER.orderReference) {
-      setFoundOrder(SAMPLE_DEMO_ORDER);
-      return;
-    }
+  };
 
-    setFoundOrder(null);
-    setLookupError(
-      `No demo order found in memory for "${trimmed}". Place a demo order in Checkout or click "Inspect Sample Demo Order (GAY-DEMO-1041)" below.`
-    );
+  const handleLookup = (e: React.FormEvent) => {
+    e.preventDefault();
+    void runLookup(referenceInput);
   };
 
   return (
@@ -204,7 +142,8 @@ export function OrderLookupRouteShell() {
               Check Order &amp; Payment Status
             </h1>
             <p className="mt-1.5 text-xs leading-relaxed text-[#524B44]">
-              Enter a Demo Order Reference created during this session (e.g.,{' '}
+              Enter a Demo Order Reference created during this session or seeded in demo memory
+              (e.g.,{' '}
               <code className="font-mono font-semibold text-[#161311]">GAY-DEMO-1041</code>) to
               inspect separated order and payment lifecycle states.
             </p>
@@ -225,18 +164,19 @@ export function OrderLookupRouteShell() {
           />
           <button
             type="submit"
-            className="h-11 bg-[#161311] px-6 text-xs font-semibold tracking-wider text-[#F4F1EA] uppercase hover:bg-[#7A1C1D]"
+            disabled={lookupLoading}
+            className="h-11 bg-[#161311] px-6 text-xs font-semibold tracking-wider text-[#F4F1EA] uppercase hover:bg-[#7A1C1D] disabled:opacity-60"
           >
-            Lookup Order
+            {lookupLoading ? 'Checking...' : 'Lookup Order'}
           </button>
           <button
             type="button"
+            disabled={lookupLoading}
             onClick={() => {
-              setReferenceInput(SAMPLE_DEMO_ORDER.orderReference);
-              setLookupError(null);
-              setFoundOrder(SAMPLE_DEMO_ORDER);
+              setReferenceInput('GAY-DEMO-1041');
+              void runLookup('GAY-DEMO-1041');
             }}
-            className="h-11 border border-[#D6CFC2] bg-[#F4F1EA] px-4 text-xs font-semibold tracking-wider text-[#161311] uppercase hover:border-[#161311]"
+            className="h-11 border border-[#D6CFC2] bg-[#F4F1EA] px-4 text-xs font-semibold tracking-wider text-[#161311] uppercase hover:border-[#161311] disabled:opacity-60"
           >
             Inspect Sample (GAY-DEMO-1041)
           </button>
@@ -254,9 +194,11 @@ export function OrderLookupRouteShell() {
               <h2 className="font-editorial text-2xl font-semibold text-[#161311]">
                 Reference: {foundOrder.orderReference}
               </h2>
-              <span className="text-xs font-semibold text-[#7A1C1D] uppercase">
-                Demo Fixture Record (Not a Real Order)
-              </span>
+              {foundOrder.isDemoOrder && (
+                <span className="text-xs font-semibold text-[#7A1C1D] uppercase">
+                  Demo Fixture Record (Not a Real Order)
+                </span>
+              )}
             </div>
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -287,8 +229,8 @@ export function OrderLookupRouteShell() {
 
             <div className="border border-[#D6CFC2] bg-[#F4F1EA] p-4 text-xs">
               <p className="font-semibold text-[#161311]">
-                Recipient: {foundOrder.shippingAddress.recipientName} ({foundOrder.shippingAddress.city},{' '}
-                {foundOrder.shippingAddress.postalCode})
+                Recipient: {foundOrder.shippingAddress.recipientName} (
+                {foundOrder.shippingAddress.city}, {foundOrder.shippingAddress.postalCode})
               </p>
               <p className="mt-1 text-[#524B44]">
                 Total: <strong>{formatMoney(foundOrder.totals.payableTotal)}</strong> ·{' '}
@@ -331,7 +273,7 @@ export function AccountOrdersRouteShell({ orderId }: { orderId?: string }) {
             <p className="mt-2 text-sm leading-relaxed text-[#524B44]">
               GAYRAA is a shopping-first storefront and does not require customer login to browse or
               place orders. Authenticated account history (<code>/account/orders</code>) remains
-              disabled until Kalp Customer Auth is provisioned in Stage B.
+              disabled until Kalp Customer OTP Session Auth is provisioned in Stage B.
             </p>
             <div className="mt-6 flex flex-wrap gap-3">
               <button
@@ -356,10 +298,116 @@ export function AccountOrdersRouteShell({ orderId }: { orderId?: string }) {
   );
 }
 
+export function AccountAddressesRouteShell() {
+  const { capabilities, connector } = useStorefront();
+  const [addresses, setAddresses] = useState<CustomerAddressRecord[]>([]);
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!capabilities?.customerAddressesEnabled) return;
+    connector
+      .listCustomerAddresses()
+      .then((list) => setAddresses(list))
+      .catch((err) => {
+        setAuthNotice(
+          isStorefrontError(err) ? err.message : 'Unable to load saved customer addresses.'
+        );
+      });
+  }, [capabilities?.customerAddressesEnabled, connector]);
+
+  return (
+    <div className="mx-auto max-w-3xl px-4 py-12 sm:px-6 lg:px-8">
+      <Breadcrumbs
+        items={[
+          { label: 'Home', href: '/' },
+          { label: 'Saved Address Book', href: '/account/addresses' },
+        ]}
+      />
+
+      <div className="mt-6 border border-[#D6CFC2] bg-[#FAF8F5] p-8">
+        <div className="flex items-start gap-3.5">
+          <MapPin className="mt-1 h-6 w-6 shrink-0 text-[#7A1C1D]" aria-hidden="true" />
+          <div>
+            <p className="text-[11px] font-semibold tracking-[0.2em] text-[#7A1C1D] uppercase">
+              CAPABILITY GATED ({capabilities?.customerAddressesEnabled ? 'ENABLED' : 'DISABLED'})
+            </p>
+            <h1 className="mt-1 font-editorial text-3xl font-semibold text-[#161311]">
+              Customer Address Book Is Not Enabled
+            </h1>
+            <p className="mt-2 text-sm leading-relaxed text-[#524B44]">
+              {authNotice ||
+                'Saved delivery addresses require an authenticated Kalp customer session. You can enter any pan-India delivery PIN code and address directly during guest checkout without creating an account.'}
+            </p>
+            {addresses.length > 0 && (
+              <ul className="mt-4 space-y-2 text-xs text-[#161311]">
+                {addresses.map((addr) => (
+                  <li key={addr.id} className="border border-[#D6CFC2] bg-[#F4F1EA] p-3">
+                    <strong>{addr.label}:</strong> {addr.recipientName}, {addr.line1}, {addr.city}{' '}
+                    {addr.postalCode}
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="mt-6 flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={() => navigateTo('/checkout')}
+                className="h-11 bg-[#161311] px-5 text-xs font-semibold tracking-wider text-[#F4F1EA] uppercase hover:bg-[#7A1C1D]"
+              >
+                Proceed to Guest Checkout
+              </button>
+              <button
+                type="button"
+                onClick={() => navigateTo('/collections/all')}
+                className="h-11 border border-[#D6CFC2] bg-[#F4F1EA] px-5 text-xs font-semibold tracking-wider text-[#161311] uppercase hover:border-[#161311]"
+              >
+                Explore Collections
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function SupportRouteShell() {
-  const { config, openPolicyDrawer } = useStorefront();
+  const { config, connector, openPolicyDrawer, runtimeMode } = useStorefront();
+  const [fullName, setFullName] = useState('');
+  const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
+  const [orderReference, setOrderReference] = useState('');
+  const [topic, setTopic] = useState<SupportInquiryInput['topic']>('SIZING_FIT');
+  const [message, setMessage] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [inquiryError, setInquiryError] = useState<string | null>(null);
+  const [inquiryResult, setInquiryResult] = useState<SupportInquiryResult | null>(null);
 
   if (!config) return null;
+
+  const handleInquirySubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setInquiryError(null);
+    setInquiryResult(null);
+    setSubmitting(true);
+    try {
+      const res = await connector.submitSupportInquiry({
+        fullName,
+        email,
+        phone: phone || undefined,
+        orderReference: orderReference || undefined,
+        topic,
+        message,
+      });
+      setInquiryResult(res);
+    } catch (err) {
+      setInquiryError(
+        isStorefrontError(err) ? err.message : 'Unable to submit support inquiry right now.'
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-10 sm:px-6 lg:px-8">
@@ -410,6 +458,151 @@ export function SupportRouteShell() {
             <p className="mt-1 text-xs font-semibold text-[#161311]">{config.legalEntityName}</p>
             <p className="mt-1 text-xs text-[#524B44]">{config.contact.address}</p>
           </div>
+        </div>
+
+        {/* Support Inquiry Connector Shell */}
+        <div className="mt-8 border-t border-[#D6CFC2] pt-8">
+          <h2 className="font-editorial text-2xl font-semibold text-[#161311]">
+            Send a Client Care Inquiry{' '}
+            {runtimeMode === 'demo' ? '(Demo Mode — Local Memory Only)' : ''}
+          </h2>
+          <p className="mt-1 text-xs text-[#524B44]">
+            Ask about specific garment measurements, 3-day prepaid express PIN serviceability, or an
+            existing order reference.
+          </p>
+
+          <form onSubmit={handleInquirySubmit} className="mt-4 space-y-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div>
+                <label
+                  htmlFor="sup-name"
+                  className="block text-xs font-semibold tracking-wider text-[#161311] uppercase"
+                >
+                  Full Name *
+                </label>
+                <input
+                  id="sup-name"
+                  type="text"
+                  value={fullName}
+                  onChange={(e) => setFullName(e.target.value)}
+                  className="mt-1 h-11 w-full border border-[#D6CFC2] bg-[#F4F1EA] px-3 text-sm text-[#161311]"
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="sup-email"
+                  className="block text-xs font-semibold tracking-wider text-[#161311] uppercase"
+                >
+                  Email Address *
+                </label>
+                <input
+                  id="sup-email"
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="mt-1 h-11 w-full border border-[#D6CFC2] bg-[#F4F1EA] px-3 text-sm text-[#161311]"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              <div>
+                <label
+                  htmlFor="sup-topic"
+                  className="block text-xs font-semibold tracking-wider text-[#161311] uppercase"
+                >
+                  Topic
+                </label>
+                <select
+                  id="sup-topic"
+                  value={topic}
+                  onChange={(e) => setTopic(e.target.value as SupportInquiryInput['topic'])}
+                  className="mt-1 h-11 w-full border border-[#D6CFC2] bg-[#F4F1EA] px-3 text-xs font-semibold text-[#161311]"
+                >
+                  <option value="SIZING_FIT">Garment Sizing &amp; Fit</option>
+                  <option value="EXPRESS_SHIPPING_INQUIRY">3-Day Prepaid Express Inquiry</option>
+                  <option value="ORDER_STATUS">Order Dispatch Status</option>
+                  <option value="EXCHANGE_ASSISTANCE">3-Day Exchange Assistance</option>
+                  <option value="GENERAL">General Inquiry</option>
+                </select>
+              </div>
+              <div>
+                <label
+                  htmlFor="sup-order-ref"
+                  className="block text-xs font-semibold tracking-wider text-[#161311] uppercase"
+                >
+                  Order ID (Optional)
+                </label>
+                <input
+                  id="sup-order-ref"
+                  type="text"
+                  value={orderReference}
+                  onChange={(e) => setOrderReference(e.target.value)}
+                  placeholder="e.g. GAY-DEMO-1041"
+                  className="mt-1 h-11 w-full border border-[#D6CFC2] bg-[#F4F1EA] px-3 text-sm text-[#161311]"
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="sup-phone"
+                  className="block text-xs font-semibold tracking-wider text-[#161311] uppercase"
+                >
+                  Phone (Optional)
+                </label>
+                <input
+                  id="sup-phone"
+                  type="tel"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  className="mt-1 h-11 w-full border border-[#D6CFC2] bg-[#F4F1EA] px-3 text-sm text-[#161311]"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label
+                htmlFor="sup-message"
+                className="block text-xs font-semibold tracking-wider text-[#161311] uppercase"
+              >
+                Message *
+              </label>
+              <textarea
+                id="sup-message"
+                rows={3}
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
+                placeholder="Share your destination PIN code for express shipping or garment size questions..."
+                className="mt-1 w-full border border-[#D6CFC2] bg-[#F4F1EA] p-3 text-sm text-[#161311]"
+              />
+            </div>
+
+            {inquiryError && (
+              <p role="alert" className="text-xs font-semibold text-[#961B1E]">
+                {inquiryError}
+              </p>
+            )}
+
+            <button
+              type="submit"
+              disabled={submitting}
+              className="inline-flex h-11 items-center gap-2 bg-[#161311] px-6 text-xs font-semibold tracking-wider text-[#F4F1EA] uppercase hover:bg-[#7A1C1D] disabled:opacity-60"
+            >
+              <Send className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>{submitting ? 'Submitting...' : 'Submit Inquiry'}</span>
+            </button>
+          </form>
+
+          {inquiryResult && (
+            <div
+              role="status"
+              className="mt-4 border border-[#165B38] bg-[#EBF5EF] p-4 text-xs text-[#165B38]"
+            >
+              <p className="font-semibold">
+                Reference: {inquiryResult.inquiryReference} ({inquiryResult.status})
+              </p>
+              <p className="mt-1">{inquiryResult.summaryMessage}</p>
+            </div>
+          )}
         </div>
 
         <div className="mt-8 grid grid-cols-1 gap-6 border-t border-[#D6CFC2] pt-6 sm:grid-cols-2">
@@ -552,17 +745,17 @@ export function FaqRouteShell() {
 }
 
 export function ExchangeRequestRouteShell() {
-  const { capabilities, config } = useStorefront();
-  const [orderId, setOrderId] = useState('');
+  const { capabilities, config, connector } = useStorefront();
+  const [orderId, setOrderId] = useState('GAY-DEMO-1041');
   const [email, setEmail] = useState('');
-  const [reason, setReason] = useState<'SIZE_FIT_ISSUE' | 'DEFECTIVE_DAMAGED_ITEM'>(
-    'SIZE_FIT_ISSUE'
-  );
+  const [reason, setReason] = useState<ExchangeReasonCode>('SIZE_FIT_ISSUE');
   const [requestedSize, setRequestedSize] = useState('M');
   const [confirmedWithin3Days, setConfirmedWithin3Days] = useState(false);
   const [confirmedCustomerReturnShipping, setConfirmedCustomerReturnShipping] = useState(false);
-  const [submittedSummary, setSubmittedSummary] = useState<string | null>(null);
+  const [eligibility, setEligibility] = useState<ExchangeEligibilityResult | null>(null);
+  const [submittedResult, setSubmittedResult] = useState<ExchangeRequestResult | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
   if (!capabilities?.selfServeExchangeEnabled) {
     return (
@@ -586,30 +779,45 @@ export function ExchangeRequestRouteShell() {
     );
   }
 
-  const handlePrepareRequest = (e: React.FormEvent) => {
+  const handleCheckEligibility = async () => {
+    setFormError(null);
+    try {
+      const res = await connector.checkExchangeEligibility({ orderReference: orderId });
+      setEligibility(res);
+    } catch (err) {
+      setEligibility(null);
+      setFormError(
+        isStorefrontError(err) ? err.message : 'Unable to check exchange eligibility for this Order ID.'
+      );
+    }
+  };
+
+  const handlePrepareRequest = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
+    setSubmittedResult(null);
+    setSubmitting(true);
 
-    if (!orderId.trim() || !email.trim()) {
-      setFormError('Please provide both your valid Order ID and email address.');
-      return;
-    }
-    if (!confirmedWithin3Days || !confirmedCustomerReturnShipping) {
+    try {
+      const result = await connector.submitExchangeRequest({
+        orderReference: orderId,
+        email,
+        reason,
+        replacementSize: reason === 'SIZE_FIT_ISSUE' ? requestedSize : undefined,
+        confirmedWithin3Days,
+        confirmedUnusedWithTags: confirmedWithin3Days,
+        confirmedCustomerReturnShipping,
+      });
+      setSubmittedResult(result);
+    } catch (err) {
       setFormError(
-        'Please confirm the 3-day delivery window, original tag condition, and customer-arranged return shipping terms.'
+        isStorefrontError(err)
+          ? err.message
+          : 'Please complete all required 3-day exchange confirmations.'
       );
-      return;
+    } finally {
+      setSubmitting(false);
     }
-
-    setSubmittedSummary(
-      `DEMO EXCHANGE SUMMARY — Order ID: ${orderId.trim().toUpperCase()} | Reason: ${
-        reason === 'SIZE_FIT_ISSUE'
-          ? `Size Exchange (Requested Size: ${requestedSize})`
-          : 'Defective / Damaged Item Delivered'
-      } | Contact: ${email.trim()}. In production, email this reference to ${
-        config?.contact.email ?? 'gayraabysnm@gmail.com'
-      } within 3 days of delivery.`
-    );
   };
 
   return (
@@ -639,14 +847,23 @@ export function ExchangeRequestRouteShell() {
               >
                 Valid Order ID *
               </label>
-              <input
-                id="ex-order-id"
-                type="text"
-                value={orderId}
-                onChange={(e) => setOrderId(e.target.value)}
-                placeholder="e.g. GAY-DEMO-1041"
-                className="mt-1.5 h-11 w-full border border-[#D6CFC2] bg-[#F4F1EA] px-3 text-sm text-[#161311]"
-              />
+              <div className="mt-1.5 flex gap-2">
+                <input
+                  id="ex-order-id"
+                  type="text"
+                  value={orderId}
+                  onChange={(e) => setOrderId(e.target.value)}
+                  placeholder="e.g. GAY-DEMO-1041"
+                  className="h-11 flex-1 border border-[#D6CFC2] bg-[#F4F1EA] px-3 font-mono text-sm text-[#161311] uppercase"
+                />
+                <button
+                  type="button"
+                  onClick={() => void handleCheckEligibility()}
+                  className="h-11 border border-[#D6CFC2] bg-[#F4F1EA] px-3 text-[11px] font-semibold tracking-wider text-[#161311] uppercase hover:border-[#161311]"
+                >
+                  Check ID
+                </button>
+              </div>
             </div>
 
             <div>
@@ -667,6 +884,16 @@ export function ExchangeRequestRouteShell() {
             </div>
           </div>
 
+          {eligibility && (
+            <div className="border border-[#D6CFC2] bg-[#F4F1EA] p-3 text-xs text-[#161311]">
+              <p className="font-semibold text-[#165B38]">
+                Order {eligibility.orderReference} verified in demo memory ({eligibility.windowDays}
+                -day window):
+              </p>
+              <p className="mt-1 text-[#524B44]">{eligibility.policySummary}</p>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
               <label
@@ -678,13 +905,13 @@ export function ExchangeRequestRouteShell() {
               <select
                 id="ex-reason"
                 value={reason}
-                onChange={(e) =>
-                  setReason(e.target.value as 'SIZE_FIT_ISSUE' | 'DEFECTIVE_DAMAGED_ITEM')
-                }
+                onChange={(e) => setReason(e.target.value as ExchangeReasonCode)}
                 className="mt-1.5 h-11 w-full border border-[#D6CFC2] bg-[#F4F1EA] px-3 text-xs font-semibold text-[#161311]"
               >
                 <option value="SIZE_FIT_ISSUE">Size Fit Issue (1 Exchange Permitted)</option>
-                <option value="DEFECTIVE_DAMAGED_ITEM">Defective or Damaged Item Delivered</option>
+                <option value="DEFECTIVE_OR_DAMAGED_ITEM">
+                  Defective or Damaged Item Delivered
+                </option>
               </select>
             </div>
 
@@ -749,18 +976,23 @@ export function ExchangeRequestRouteShell() {
 
           <button
             type="submit"
-            className="h-11 bg-[#161311] px-6 text-xs font-semibold tracking-wider text-[#F4F1EA] uppercase hover:bg-[#7A1C1D]"
+            disabled={submitting}
+            className="h-11 bg-[#161311] px-6 text-xs font-semibold tracking-wider text-[#F4F1EA] uppercase hover:bg-[#7A1C1D] disabled:opacity-60"
           >
-            Prepare 3-Day Exchange Request (Demo)
+            {submitting ? 'Preparing...' : 'Prepare 3-Day Exchange Request (Demo)'}
           </button>
         </form>
 
-        {submittedSummary && (
+        {submittedResult && (
           <div
             role="status"
-            className="mt-6 border border-[#165B38] bg-[#EBF5EF] p-4 text-xs text-[#165B38]"
+            className="mt-6 space-y-1.5 border border-[#165B38] bg-[#EBF5EF] p-4 text-xs text-[#165B38]"
           >
-            <p className="font-semibold">{submittedSummary}</p>
+            <p className="font-semibold">
+              Exchange Reference: {submittedResult.exchangeReference} ({submittedResult.status})
+            </p>
+            <p>{submittedResult.returnShippingInstruction}</p>
+            <p className="text-[11px]">{submittedResult.demoDisclaimer}</p>
           </div>
         )}
       </div>

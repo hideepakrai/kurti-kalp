@@ -3,7 +3,7 @@
  * Includes primary catalog/occasion navigation and footer links to lean customer-facing route shells.
  */
 
-import { Navigation } from '../domain/content';
+import type { Navigation } from '../domain/content';
 
 export const GAYRAA_NAVIGATION: Navigation = {
   primary: [
@@ -127,6 +127,7 @@ export const GAYRAA_NAVIGATION: Navigation = {
         { label: 'Atelier Support & Contact', href: '/support' },
         { label: 'Frequently Asked Questions', href: '/faq' },
         { label: 'Customer Account Orders', href: '/account/orders', requiresCapability: 'customerAccountsEnabled' },
+        { label: 'Address Book', href: '/account/addresses', requiresCapability: 'customerAddressesEnabled' },
         { label: 'Saved Styles', href: '/saved', requiresCapability: 'wishlistEnabled' },
       ],
     },

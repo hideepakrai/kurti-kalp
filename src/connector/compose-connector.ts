@@ -3,7 +3,7 @@
  *
  * Guarantees:
  * 1. Production client bundle (`vite build`, where `import.meta.env.DEV` is false)
- *    contains ZERO imports of `src/testing/mock-connector` or `src/testing/fixtures/*`.
+ *    contains ZERO code or data from `src/testing/mock-connector` or `src/testing/fixtures/*`.
  * 2. Connected mode uses `HttpStorefrontConnector` calling only same-origin `/api/storefront/v1/*`.
  * 3. Unavailable mode (or missing backend config) uses `UnavailableStorefrontConnector`
  *    and never silently serves fake live data.
@@ -19,7 +19,6 @@ export function resolveInitialStorefrontMode(): StorefrontRuntimeMode {
     const params = new URLSearchParams(window.location.search);
     const queryMode = params.get('mode');
     if (queryMode === 'demo' || queryMode === 'connected' || queryMode === 'unavailable') {
-      // In production bundles, demo fixtures are stripped, so 'demo' cannot silently run
       if (!import.meta.env.DEV && queryMode === 'demo') {
         return 'unavailable';
       }
@@ -59,15 +58,14 @@ export async function composeStorefrontConnector(
     };
   }
 
-  // Demo mode: Only loaded in development/test (`import.meta.env.DEV`).
-  // During `vite build`, Rollup dead-code-eliminates this branch so zero mock or
-  // fixture modules enter the production client bundle.
   if (import.meta.env.DEV) {
     const devMockModule = await import('../testing/mock-connector');
-    return {
-      connector: devMockModule.defaultMockConnector,
-      effectiveMode: 'demo',
-    };
+    if (devMockModule?.defaultMockConnector) {
+      return {
+        connector: devMockModule.defaultMockConnector,
+        effectiveMode: 'demo',
+      };
+    }
   }
 
   return {

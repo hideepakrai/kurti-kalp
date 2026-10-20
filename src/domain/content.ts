@@ -7,6 +7,14 @@ import { MediaAsset } from './catalog';
 
 export type StorefrontRuntimeMode = 'demo' | 'connected' | 'unavailable';
 
+export type CapabilityGateKey =
+  | 'orderLookupEnabled'
+  | 'selfServeExchangeEnabled'
+  | 'customerAccountsEnabled'
+  | 'customerAddressesEnabled'
+  | 'wishlistEnabled'
+  | 'productReviewsEnabled';
+
 export interface StorefrontCapabilities {
   stage: 'STAGE_A_MOCK_PROTOTYPE' | 'STAGE_B_CONNECTED';
   mode: StorefrontRuntimeMode;
@@ -17,7 +25,9 @@ export interface StorefrontCapabilities {
   orderLookupEnabled: boolean;
   selfServeExchangeEnabled: boolean;
   customerAccountsEnabled: boolean;
+  customerAddressesEnabled: boolean;
   wishlistEnabled: boolean;
+  productReviewsEnabled: boolean;
   supportedHeroVariants: Array<'layered-typographic' | 'split-editorial'>;
 }
 
@@ -59,10 +69,7 @@ export interface NavigationLinkItem {
   href: string;
   description?: string;
   badge?: string;
-  requiresCapability?: keyof Pick<
-    StorefrontCapabilities,
-    'orderLookupEnabled' | 'selfServeExchangeEnabled' | 'customerAccountsEnabled' | 'wishlistEnabled'
-  >;
+  requiresCapability?: CapabilityGateKey;
 }
 
 export interface NavigationGroup {
@@ -81,10 +88,7 @@ export interface Navigation {
       label: string;
       href?: string;
       policyId?: 'shipping' | 'exchange' | 'privacy' | 'terms';
-      requiresCapability?: keyof Pick<
-        StorefrontCapabilities,
-        'orderLookupEnabled' | 'selfServeExchangeEnabled' | 'customerAccountsEnabled' | 'wishlistEnabled'
-      >;
+      requiresCapability?: CapabilityGateKey;
     }>;
   }>;
 }

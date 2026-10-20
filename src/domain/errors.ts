@@ -1,13 +1,19 @@
 /**
  * Typed domain and connector error models.
- * Maps connector and BFF failures to clear, recoverable customer-facing messages.
+ * Maps connector and BFF failures to clear, recoverable customer-facing messages
+ * with correlation ID and retry metadata.
  */
 
 export type StorefrontErrorCode =
   | 'NETWORK_FAILURE'
+  | 'OFFLINE_ERROR'
   | 'TIMEOUT_ERROR'
   | 'REQUEST_ABORTED'
+  | 'RATE_LIMITED'
+  | 'SERVER_ERROR'
   | 'UPSTREAM_UNAVAILABLE'
+  | 'UNAUTHORIZED'
+  | 'SESSION_EXPIRED'
   | 'VALIDATION_ERROR'
   | 'NOT_FOUND'
   | 'UNAVAILABLE_VARIANT'
@@ -26,6 +32,8 @@ export class StorefrontError extends Error {
   public readonly code: StorefrontErrorCode;
   public readonly recoverable: boolean;
   public readonly statusCode?: number;
+  public readonly correlationId?: string;
+  public readonly retryAfterSeconds?: number;
   public readonly fieldIssues?: FieldValidationIssue[];
   public readonly latestCartRevision?: string;
 
@@ -34,6 +42,8 @@ export class StorefrontError extends Error {
     message: string;
     recoverable?: boolean;
     statusCode?: number;
+    correlationId?: string;
+    retryAfterSeconds?: number;
     fieldIssues?: FieldValidationIssue[];
     latestCartRevision?: string;
   }) {
@@ -42,6 +52,8 @@ export class StorefrontError extends Error {
     this.code = options.code;
     this.recoverable = options.recoverable ?? true;
     this.statusCode = options.statusCode;
+    this.correlationId = options.correlationId;
+    this.retryAfterSeconds = options.retryAfterSeconds;
     this.fieldIssues = options.fieldIssues;
     this.latestCartRevision = options.latestCartRevision;
   }

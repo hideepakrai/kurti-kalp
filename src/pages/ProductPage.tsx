@@ -12,8 +12,9 @@
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Check, Loader2, RefreshCw, Ruler, ShieldAlert, ShoppingBag, Truck } from 'lucide-react';
+import { Check, Loader2, RefreshCw, Ruler, ShieldAlert, ShoppingBag, Star, Truck } from 'lucide-react';
 import { ProductDetail, ProductVariant } from '../domain/catalog';
+import { ProductReviewsResult } from '../domain/customer';
 import { isStorefrontError, StorefrontError } from '../domain/errors';
 import { formatMoney } from '../domain/money';
 import { useStorefront } from '../integration/StorefrontProvider';
@@ -30,6 +31,7 @@ import { EmptyStatePanel, RecoverableErrorBanner } from '../components/ui/StateF
 export function ProductPage({ slug }: { slug: string }) {
   const {
     connector,
+    capabilities,
     addToCart,
     addingToCart,
     openCartDrawer,
@@ -38,6 +40,7 @@ export function ProductPage({ slug }: { slug: string }) {
   } = useStorefront();
 
   const [product, setProduct] = useState<ProductDetail | null>(null);
+  const [reviewsResult, setReviewsResult] = useState<ProductReviewsResult | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<StorefrontError | null>(null);
 
@@ -57,6 +60,14 @@ export function ProductPage({ slug }: { slug: string }) {
     try {
       const detail = await connector.getProduct({ slug });
       setProduct(detail);
+      if (capabilities?.productReviewsEnabled) {
+        connector
+          .listProductReviews(detail.id)
+          .then((res) => setReviewsResult(res))
+          .catch(() => setReviewsResult(null));
+      } else {
+        setReviewsResult(null);
+      }
       // Reset option selection when switching to a different product
       setSelectedOptions({});
       setQuantity(1);
@@ -76,7 +87,7 @@ export function ProductPage({ slug }: { slug: string }) {
     } finally {
       setLoading(false);
     }
-  }, [connector, slug]);
+  }, [connector, slug, capabilities?.productReviewsEnabled]);
 
   useEffect(() => {
     void loadProduct();
@@ -533,6 +544,58 @@ export function ProductPage({ slug }: { slug: string }) {
           </div>
         </div>
       </div>
+
+      {/* Capability-Gated Product Reviews Shell */}
+      {capabilities?.productReviewsEnabled && reviewsResult && reviewsResult.reviews.length > 0 && (
+        <section
+          aria-labelledby="reviews-heading"
+          className="mt-16 border-t border-[#D6CFC2] pt-12"
+        >
+          <div className="mb-6 flex flex-wrap items-baseline justify-between gap-2">
+            <div>
+              <p className="text-[11px] font-semibold tracking-[0.2em] text-[#7A1C1D] uppercase">
+                {reviewsResult.isDemoFixture
+                  ? 'DEMO MODE · LABELLED REVIEW FIXTURES'
+                  : 'VERIFIED CLIENT IMPRESSIONS'}
+              </p>
+              <h2
+                id="reviews-heading"
+                className="mt-1 font-editorial text-2xl font-semibold tracking-wider text-[#161311] uppercase sm:text-3xl"
+              >
+                CLIENT FIT &amp; CRAFT IMPRESSIONS ({reviewsResult.averageRating.toFixed(1)} / 5)
+              </h2>
+            </div>
+            <span className="text-xs text-[#6B6259]">
+              {reviewsResult.isDemoFixture
+                ? 'Demo review fixtures shown for UI layout validation only'
+                : `${reviewsResult.totalCount} verified reviews`}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+            {reviewsResult.reviews.map((rev) => (
+              <article
+                key={rev.id}
+                className="border border-[#D6CFC2] bg-[#FAF8F5] p-5 text-xs text-[#161311]"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1 text-[#7A1C1D]">
+                    {Array.from({ length: rev.rating }).map((_, idx) => (
+                      <Star key={idx} className="h-3.5 w-3.5 fill-current" aria-hidden="true" />
+                    ))}
+                  </div>
+                  <span className="font-mono text-[11px] text-[#6B6259]">
+                    {rev.isDemoFixture ? 'Demo Fixture' : 'Verified Purchase'}
+                  </span>
+                </div>
+                <h3 className="mt-2.5 text-sm font-semibold text-[#161311]">{rev.title}</h3>
+                <p className="mt-1.5 leading-relaxed text-[#524B44]">{rev.comment}</p>
+                <p className="mt-3 text-[11px] font-semibold text-[#524B44]">{rev.authorName}</p>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* Related Creations Section */}
       {product.relatedProducts && product.relatedProducts.length > 0 && (
