@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 1200" width="900" height="1200">
+  <defs>
+    <linearGradient id="bg6" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#F5F0E4"/>
+      <stop offset="100%" stop-color="#DFD3BE"/>
+    </linearGradient>
+    <linearGradient id="bandhani" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#B07A22"/>
+      <stop offset="100%" stop-color="#8A5B14"/>
+    </linearGradient>
+    <pattern id="bandhaniDots" width="32" height="32" patternUnits="userSpaceOnUse">
+      <circle cx="8" cy="16" r="2.2" fill="#FAF8F5" fill-opacity="0.65"/>
+      <circle cx="16" cy="8" r="2.2" fill="#FAF8F5" fill-opacity="0.65"/>
+      <circle cx="24" cy="16" r="2.2" fill="#FAF8F5" fill-opacity="0.65"/>
+      <circle cx="16" cy="24" r="2.2" fill="#FAF8F5" fill-opacity="0.65"/>
+    </pattern>
+  </defs>
+  <rect width="900" height="1200" fill="url(#bg6)"/>
+  <ellipse cx="450" cy="1075" rx="195" ry="22" fill="#161311" opacity="0.14"/>
+  <rect x="48" y="48" width="804" height="1104" fill="none" stroke="#8A5B14" stroke-opacity="0.28" stroke-width="1"/>
+  <circle cx="450" cy="210" r="48" fill="#8C624C"/>
+  <!-- Bandhani Kurta & Sharara Silhouette -->
+  <path d="M350 760 L446 760 L425 1045 L315 1045 Z" fill="#7A1C1D"/>
+  <path d="M454 760 L550 760 L585 1045 L475 1045 Z" fill="#7A1C1D"/>
+  <path d="M365 298 L535 298 L560 805 L340 805 Z" fill="url(#bandhani)"/>
+  <path d="M365 298 L535 298 L560 805 L340 805 Z" fill="url(#bandhaniDots)"/>
+  <path d="M355 305 L265 920 L340 935 L425 315 Z" fill="#7A1C1D" fill-opacity="0.7" stroke="#9E6B2B" stroke-width="1.5"/>
+  <g transform="translate(80, 1110)">
+    <text x="0" y="0" font-family="Plus Jakarta Sans, sans-serif" font-size="14" letter-spacing="3" fill="#524B44">DEMO FIXTURE ILLUSTRATION · BANDHANI FESTIVE EDIT</text>
+  </g>
+</svg>

@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 1200" width="900" height="1200">
+  <defs>
+    <linearGradient id="bg5" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ECE9E2"/>
+      <stop offset="100%" stop-color="#D6CFC2"/>
+    </linearGradient>
+    <linearGradient id="indigoGarment" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1F2937"/>
+      <stop offset="100%" stop-color="#111827"/>
+    </linearGradient>
+    <pattern id="dabuPrint" width="36" height="36" patternUnits="userSpaceOnUse">
+      <path d="M18 4 C24 12 24 24 18 32 C12 24 12 12 18 4 Z" fill="#EAE4D8" fill-opacity="0.22"/>
+    </pattern>
+  </defs>
+  <rect width="900" height="1200" fill="url(#bg5)"/>
+  <ellipse cx="450" cy="1075" rx="195" ry="22" fill="#161311" opacity="0.16"/>
+  <rect x="48" y="48" width="804" height="1104" fill="none" stroke="#1F2937" stroke-opacity="0.2" stroke-width="1"/>
+  <circle cx="450" cy="210" r="48" fill="#8C624C"/>
+  <!-- Draped Indo-Western & Dabu Print Silhouette -->
+  <path d="M365 298 L535 298 L585 980 L345 860 Z" fill="url(#indigoGarment)"/>
+  <path d="M365 298 L535 298 L585 980 L345 860 Z" fill="url(#dabuPrint)"/>
+  <path d="M365 820 L555 880 L520 1040 L375 1040 Z" fill="#161E2E"/>
+  <g transform="translate(80, 1110)">
+    <text x="0" y="0" font-family="Plus Jakarta Sans, sans-serif" font-size="14" letter-spacing="3" fill="#524B44">DEMO FIXTURE ILLUSTRATION · DABU &amp; INDO-WESTERN EDIT</text>
+  </g>
+</svg>

@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 1200" width="900" height="1200">
+  <defs>
+    <linearGradient id="bg4" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#F6F3EC"/>
+      <stop offset="100%" stop-color="#E5DEC9"/>
+    </linearGradient>
+    <linearGradient id="ivorySet" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#FDFBF7"/>
+      <stop offset="100%" stop-color="#E9E0CE"/>
+    </linearGradient>
+    <pattern id="goldFloral" width="52" height="52" patternUnits="userSpaceOnUse">
+      <circle cx="26" cy="26" r="6" fill="none" stroke="#9E6B2B" stroke-width="1.2" stroke-opacity="0.45"/>
+      <circle cx="26" cy="26" r="2" fill="#9E6B2B" fill-opacity="0.5"/>
+    </pattern>
+  </defs>
+  <rect width="900" height="1200" fill="url(#bg4)"/>
+  <ellipse cx="450" cy="1075" rx="210" ry="24" fill="#161311" opacity="0.12"/>
+  <rect x="48" y="48" width="804" height="1104" fill="none" stroke="#9E6B2B" stroke-opacity="0.35" stroke-width="1"/>
+  <circle cx="450" cy="210" r="48" fill="#8C624C"/>
+  <!-- Ivory & Gold Organza Anarkali / Saree Silhouette -->
+  <path d="M380 300 L520 300 L650 1035 L250 1035 Z" fill="url(#ivorySet)" stroke="#C8B99E" stroke-width="1.5"/>
+  <path d="M380 300 L520 300 L650 1035 L250 1035 Z" fill="url(#goldFloral)"/>
+  <rect x="252" y="990" width="396" height="32" fill="#9E6B2B" opacity="0.45"/>
+  <path d="M370 305 C325 510 280 710 230 960 L355 975 C395 720 450 510 520 310 Z" fill="#FAF8F5" fill-opacity="0.65" stroke="#9E6B2B" stroke-width="1.2"/>
+  <g transform="translate(80, 1110)">
+    <text x="0" y="0" font-family="Plus Jakarta Sans, sans-serif" font-size="14" letter-spacing="3" fill="#524B44">DEMO FIXTURE ILLUSTRATION · IVORY &amp; ZARI ORGANZA EDIT</text>
+  </g>
+</svg>

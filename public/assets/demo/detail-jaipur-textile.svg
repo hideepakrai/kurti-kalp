@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 1200" width="900" height="1200">
+  <defs>
+    <linearGradient id="weaveBg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#EAE4D8"/>
+      <stop offset="100%" stop-color="#D8CEBE"/>
+    </linearGradient>
+    <pattern id="weaveGrid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <line x1="0" y1="12" x2="24" y2="12" stroke="#9E6B2B" stroke-opacity="0.22" stroke-width="1"/>
+      <line x1="12" y1="0" x2="12" y2="24" stroke="#7A1C1D" stroke-opacity="0.18" stroke-width="1"/>
+    </pattern>
+    <pattern id="blockMotif" width="120" height="120" patternUnits="userSpaceOnUse">
+      <circle cx="60" cy="60" r="34" fill="none" stroke="#7A1C1D" stroke-width="2" stroke-opacity="0.6"/>
+      <circle cx="60" cy="60" r="18" fill="none" stroke="#9E6B2B" stroke-width="1.5" stroke-opacity="0.7"/>
+      <path d="M60 16 L72 60 L60 104 L48 60 Z" fill="#7A1C1D" fill-opacity="0.28"/>
+      <path d="M16 60 L60 72 L104 60 L60 48 Z" fill="#9E6B2B" fill-opacity="0.28"/>
+    </pattern>
+  </defs>
+  <rect width="900" height="1200" fill="url(#weaveBg)"/>
+  <rect width="900" height="1200" fill="url(#weaveGrid)"/>
+  <rect x="90" y="90" width="720" height="960" fill="url(#blockMotif)" stroke="#7A1C1D" stroke-opacity="0.35" stroke-width="1.5"/>
+  <rect x="48" y="48" width="804" height="1104" fill="none" stroke="#161311" stroke-opacity="0.2" stroke-width="1"/>
+  <g transform="translate(80, 1110)">
+    <text x="0" y="0" font-family="Plus Jakarta Sans, sans-serif" font-size="14" letter-spacing="3" fill="#161311">DEMO FIXTURE ILLUSTRATION · TEXTILE &amp; ZARI DETAIL VIEW</text>
+  </g>
+</svg>

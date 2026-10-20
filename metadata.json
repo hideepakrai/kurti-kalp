@@ -1,0 +1,6 @@
+{
+  "name": "GAYRAA — Jaipur Ethnic & Fusion Storefront",
+  "description": "Conscious ethnic and fusion fashion storefront crafted in Jaipur. Stage A frontend prototype with typed Kalp-compatible connector boundary.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

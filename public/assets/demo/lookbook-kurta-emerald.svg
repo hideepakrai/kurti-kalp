@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 1200" width="900" height="1200">
+  <defs>
+    <linearGradient id="bg2" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#F4F1EA"/>
+      <stop offset="100%" stop-color="#DFD7C8"/>
+    </linearGradient>
+    <linearGradient id="kurta" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1E3F35"/>
+      <stop offset="100%" stop-color="#10261F"/>
+    </linearGradient>
+    <pattern id="zariMotif" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M20 6 L25 20 L20 34 L15 20 Z" fill="#9E6B2B" fill-opacity="0.28"/>
+    </pattern>
+  </defs>
+  <rect width="900" height="1200" fill="url(#bg2)"/>
+  <ellipse cx="450" cy="1075" rx="190" ry="22" fill="#161311" opacity="0.14"/>
+  <rect x="48" y="48" width="804" height="1104" fill="none" stroke="#1E3F35" stroke-opacity="0.2" stroke-width="1"/>
+  <!-- Model Head & Hair -->
+  <circle cx="450" cy="210" r="50" fill="#8C624C"/>
+  <path d="M402 185 C410 138 490 138 498 195 L492 268 L408 268 Z" fill="#181412"/>
+  <!-- Straight Kurta & Palazzo -->
+  <rect x="360" y="820" width="76" height="225" fill="#EDE6DA" stroke="#C8BFA8" stroke-width="1"/>
+  <rect x="464" y="820" width="76" height="225" fill="#EDE6DA" stroke="#C8BFA8" stroke-width="1"/>
+  <path d="M365 295 L535 295 L560 855 L340 855 Z" fill="url(#kurta)"/>
+  <path d="M365 295 L535 295 L560 855 L340 855 Z" fill="url(#zariMotif)"/>
+  <!-- Zari Neckline Placket -->
+  <rect x="432" y="295" width="36" height="175" fill="none" stroke="#9E6B2B" stroke-width="3"/>
+  <line x1="450" y1="295" x2="450" y2="470" stroke="#9E6B2B" stroke-width="1.5"/>
+  <!-- Chanderi Stole -->
+  <path d="M510 295 L615 880 L545 895 L475 310 Z" fill="#9E6B2B" fill-opacity="0.32" stroke="#9E6B2B" stroke-opacity="0.55"/>
+  <g transform="translate(80, 1110)">
+    <text x="0" y="0" font-family="Plus Jakarta Sans, sans-serif" font-size="14" letter-spacing="3" fill="#524B44">DEMO FIXTURE ILLUSTRATION · CHANDERI KURTA SET</text>
+  </g>
+</svg>

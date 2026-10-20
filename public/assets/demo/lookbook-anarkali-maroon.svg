@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 1200" width="900" height="1200">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#EDE8DF"/>
+      <stop offset="55%" stop-color="#E2DAD0"/>
+      <stop offset="100%" stop-color="#D5CBBF"/>
+    </linearGradient>
+    <linearGradient id="garment" x1="0" y1="0" x2="0.8" y2="1">
+      <stop offset="0%" stop-color="#7A1C1D"/>
+      <stop offset="50%" stop-color="#5D1415"/>
+      <stop offset="100%" stop-color="#3E0C0D"/>
+    </linearGradient>
+    <linearGradient id="dupatta" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#FAF6F0" stop-opacity="0.72"/>
+      <stop offset="100%" stop-color="#DFC8A6" stop-opacity="0.48"/>
+    </linearGradient>
+    <pattern id="jaipurBlock" width="48" height="48" patternUnits="userSpaceOnUse">
+      <circle cx="24" cy="24" r="3" fill="#9E6B2B" fill-opacity="0.35"/>
+      <path d="M24 10 L30 24 L24 38 L18 24 Z" fill="none" stroke="#9E6B2B" stroke-width="1" stroke-opacity="0.3"/>
+    </pattern>
+  </defs>
+  <rect width="900" height="1200" fill="url(#bg)"/>
+  <!-- Architectural studio shadow -->
+  <polygon points="0,950 900,820 900,1200 0,1200" fill="#C9BFB2" opacity="0.55"/>
+  <ellipse cx="450" cy="1070" rx="220" ry="26" fill="#161311" opacity="0.16"/>
+  <!-- Editorial Studio Frame -->
+  <rect x="48" y="48" width="804" height="1104" fill="none" stroke="#9E6B2B" stroke-opacity="0.25" stroke-width="1"/>
+  <!-- Figure & Anarkali Silhouette -->
+  <circle cx="455" cy="215" r="54" fill="#8D614A"/>
+  <path d="M405 190 C410 140 500 140 505 205 C512 245 495 275 495 275 L415 275 Z" fill="#1B1614"/>
+  <!-- Neckline & Bodice -->
+  <path d="M428 265 L482 265 L495 320 L415 320 Z" fill="#8D614A"/>
+  <!-- Flared Anarkali Gown -->
+  <path d="M385 310 L525 310 L660 1030 L240 1030 Z" fill="url(#garment)"/>
+  <path d="M385 310 L525 310 L660 1030 L240 1030 Z" fill="url(#jaipurBlock)"/>
+  <!-- Pleat lines -->
+  <line x1="425" y1="430" x2="330" y2="1030" stroke="#300809" stroke-width="2" opacity="0.6"/>
+  <line x1="455" y1="430" x2="450" y2="1030" stroke="#300809" stroke-width="2" opacity="0.6"/>
+  <line x1="485" y1="430" x2="575" y2="1030" stroke="#300809" stroke-width="2" opacity="0.6"/>
+  <!-- Zari Border -->
+  <rect x="242" y="985" width="416" height="28" fill="#9E6B2B" opacity="0.65"/>
+  <rect x="240" y="1018" width="420" height="12" fill="#9E6B2B" opacity="0.85"/>
+  <!-- Organza Dupatta Drape -->
+  <path d="M375 310 C310 470 250 670 215 920 L335 940 C365 700 415 480 525 320 Z" fill="url(#dupatta)" stroke="#9E6B2B" stroke-opacity="0.45" stroke-width="1.5"/>
+  <!-- Demo Fixture Watermark Label -->
+  <g transform="translate(80, 1110)">
+    <text x="0" y="0" font-family="Plus Jakarta Sans, sans-serif" font-size="14" letter-spacing="3" fill="#524B44">DEMO FIXTURE ILLUSTRATION · GAYRAA STUDIO LOOKBOOK</text>
+  </g>
+</svg>

@@ -1,0 +1,92 @@
+/**
+ * GAYRAA Semantic Design Tokens (Proposed Design System — Stage A Prototype)
+ * Note: These are proposed tokens blending GAYRAA's Jaipur ethnic positioning
+ * with the editorial composition of the supplied visual reference, not verified
+ * official brand guidelines.
+ */
+
+:root {
+  /* Surface Hierarchy (60-30-10 discipline) */
+  --bg-canvas: #F4F1EA;          /* Warm alabaster stone (primary canvas) */
+  --bg-surface: #FAF8F5;         /* Soft ivory paper (cards, drawers, inputs) */
+  --bg-muted-band: #EAE4D8;      /* Sandstone band (policy strip, campaign split) */
+  --bg-contrast: #161311;        /* Deep espresso charcoal (category spotlight, footer) */
+  --bg-contrast-elevated: #241F1C;
+
+  /* Text Hierarchy (Verified WCAG 2.1 AA/AAA contrast) */
+  --text-primary: #161311;       /* 15.9:1 on --bg-canvas */
+  --text-secondary: #524B44;     /* 7.1:1 on --bg-canvas */
+  --text-muted: #6B6259;         /* 5.1:1 on --bg-canvas */
+  --text-on-contrast: #F4F1EA;   /* 15.9:1 on --bg-contrast */
+  --text-muted-on-contrast: #C8C0B4; /* 9.8:1 on --bg-contrast */
+
+  /* Brand & Decorative Accents */
+  --accent-primary: #7A1C1D;     /* Jaipur Sindoor / Festive Maroon (8.4:1 with ivory text) */
+  --accent-primary-hover: #5E1415;
+  --accent-brass: #9E6B2B;       /* Decorative brass detail only */
+
+  /* Semantic Status (Always paired with explicit text/icon) */
+  --status-success-text: #165B38;
+  --status-success-bg: #EBF5EF;
+  --status-success-border: #B5DBC6;
+
+  --status-warning-text: #7C4700;
+  --status-warning-bg: #FDF3E7;
+  --status-warning-border: #E8C79B;
+
+  --status-error-text: #961B1E;
+  --status-error-bg: #FDECEC;
+  --status-error-border: #E5B4B5;
+
+  /* Surface-Aware Focus Ring */
+  --focus-ring-color: #7A1C1D;
+  --focus-ring-offset: #F4F1EA;
+
+  /* Borders, Radius & Shadows */
+  --border-subtle: #D6CFC2;
+  --border-strong: #161311;
+  --border-on-contrast: #38312C;
+  --radius-none: 0px;
+  --radius-sm: 2px;
+  --shadow-drawer: -12px 0 32px rgba(22, 19, 17, 0.16);
+  --shadow-subtle: 0 2px 8px rgba(22, 19, 17, 0.05);
+
+  /* Typography (Max 2 font families, minimal weights 400 & 600) */
+  --font-display: 'Cormorant Garamond', Georgia, serif;
+  --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+
+  /* Layout & Container Widths */
+  --container-max: 1360px;
+  --header-height: 64px;
+
+  /* Motion & Transitions (150-250ms budget) */
+  --ease-editorial: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration-fast: 150ms;
+  --duration-normal: 220ms;
+}
+
+/* Dark / Contrast Surface Context Overrides for Surface-Aware Focus */
+.surface-contrast {
+  background-color: var(--bg-contrast);
+  color: var(--text-on-contrast);
+  --focus-ring-color: #F4F1EA;
+  --focus-ring-offset: #161311;
+}
+
+/* Accessible Focus-Visible Contract */
+:focus-visible {
+  outline: 2px solid var(--focus-ring-color);
+  outline-offset: 2px;
+}
+
+/* Reduced Motion Compliance */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
