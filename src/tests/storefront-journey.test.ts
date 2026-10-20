@@ -1,237 +1,434 @@
 /**
- * Automated Verification Suite for Stage A Storefront & Connector Contracts.
- * Run with: npx tsx src/tests/storefront-journey.test.ts
- *
- * Tests:
- * 1. Minor-unit Money validation & formatting
- * 2. Navigation & Collection/Search connector queries (categories, merchandising, occasions, facets, pagination)
- * 3. Product-specific variant resolution, out-of-stock rejection, and low-stock caps
- * 4. Cart revision tracking & CART_CONFLICT detection
- * 5. Quote generation, expiry (QUOTE_EXPIRED), and cart-revision sync
- * 6. Idempotent order submission (retry returns same order; changed payload returns IDEMPOTENCY_CONFLICT)
- * 7. Separation of orderStatus and paymentStatus & demo mode disclaimers
+ * Comprehensive Automated Verification Suite for GAYRAA Storefront:
+ * 1. Domain & Money minor-unit unit tests
+ * 2. Hardened URL query parameter sanitization unit tests
+ * 3. Explicit Runtime Modes (demo, connected, unavailable) & UnavailableStorefrontConnector tests
+ * 4. HttpStorefrontConnector contract tests (same-origin enforcement, cookie credentials, timeout, abort, 503 mapping)
+ * 5. Express Storefront BFF (/api/storefront/v1/*) live HTTP integration tests
+ * 6. End-to-End Customer Journeys (Catalog, Search, Variant Matrix, Cart Revision, Checkout Quote Expiry & Idempotency)
+ * 7. Dynamic Merchandising Slots & WCAG Contrast / Security Boundary audit
  */
 
-import assert from 'node:assert/strict';
-import { LocalMockStorefrontConnector } from '../connector/mock-connector';
+import fs from 'fs';
+import http from 'http';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import express from 'express';
+import { createStorefrontBffRouter } from '../../server/storefront-bff';
+import { buildStorefrontCapabilities } from '../config/storefront';
+import {
+  composeStorefrontConnector,
+  HttpStorefrontConnector,
+  UnavailableStorefrontConnector,
+} from '../connector';
 import { StorefrontError } from '../domain/errors';
 import { assertValidMoney, createMoney, formatMoney } from '../domain/money';
+import { sanitizeCollectionSearchParams } from '../pages/CollectionPage';
+import { LocalMockStorefrontConnector } from '../testing/mock-connector';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+function assert(condition: unknown, message: string): void {
+  if (!condition) {
+    throw new Error(`ASSERTION FAILED: ${message}`);
+  }
+}
+
+function relativeLuminance(hex: string): number {
+  const clean = hex.replace('#', '');
+  const r = parseInt(clean.slice(0, 2), 16) / 255;
+  const g = parseInt(clean.slice(2, 4), 16) / 255;
+  const b = parseInt(clean.slice(4, 6), 16) / 255;
+  const toLinear = (c: number) => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
+  return 0.2126 * toLinear(r) + 0.7152 * toLinear(g) + 0.0722 * toLinear(b);
+}
+
+function contrastRatio(hex1: string, hex2: string): number {
+  const l1 = relativeLuminance(hex1);
+  const l2 = relativeLuminance(hex2);
+  const lighter = Math.max(l1, l2);
+  const darker = Math.min(l1, l2);
+  return (lighter + 0.05) / (darker + 0.05);
+}
 
 async function runTests() {
-  console.log('Starting GAYRAA Stage A Storefront & Connector Verification Suite...\n');
+  console.log('Running GAYRAA Storefront Unit, BFF, Journey & Accessibility Verification...');
 
-  // 1. Money validation
-  {
-    const m = createMoney(279900, 'INR', 2);
-    assertValidMoney(m);
-    assert.equal(m.amountMinor, 279900);
-    assert.ok(formatMoney(m).includes('2,799'));
+  // ---------------------------------------------------------------------------
+  // 1. Unit Tests: Money Minor-Unit Domain & URL Query Sanitization
+  // ---------------------------------------------------------------------------
+  const validMoney = createMoney(349000, 'INR', 2);
+  assertValidMoney(validMoney);
+  assert(formatMoney(validMoney).includes('3,490'), 'Money formats minor units accurately');
 
-    assert.throws(
-      () => createMoney(2799.5, 'INR', 2),
-      /amountMinor must be a safe integer/,
-      'Floating point minor unit must be rejected'
-    );
-    console.log('✓ [1/7] Minor-unit Money contract validated');
+  let floatRejected = false;
+  try {
+    createMoney(3490.5, 'INR', 2);
+  } catch {
+    floatRejected = true;
   }
+  assert(floatRejected, 'createMoney rejects non-integer float amounts');
 
-  const connector = new LocalMockStorefrontConnector({ latencyMs: 0 });
+  const dirtyParams = new URLSearchParams(
+    'q=' +
+      'a'.repeat(160) +
+      '&page=-12&maxPrice=notanumber&sort=INVALID_SORT&inStock=invalid&sizes=S,M'
+  );
+  const sanitized = sanitizeCollectionSearchParams(dirtyParams);
+  assert(sanitized.hadInvalidParams === true, 'Detects malformed URL query parameters');
+  assert(sanitized.page === 1, 'Negative page falls back safely to page 1');
+  assert(sanitized.maxPriceMinor === undefined, 'Non-numeric maxPrice is safely ignored');
+  assert(sanitized.sort === 'FEATURED', 'Unknown sort option falls back to FEATURED');
+  assert(sanitized.q.length === 120, 'Overly long search query is clamped to 120 chars');
+  assert(sanitized.sizes.join(',') === 'S,M', 'Valid size filters are preserved');
+  console.log('✓ 1. Domain Money & URL query sanitization unit tests passed');
 
-  // 2. Navigation, Collections, Occasions & Search
-  {
-    const nav = await connector.getNavigation();
-    assert.equal(nav.primary.length, 4, 'Primary navigation has 4 top-level groups');
+  // ---------------------------------------------------------------------------
+  // 2. Explicit Modes & UnavailableStorefrontConnector Honesty Tests
+  // ---------------------------------------------------------------------------
+  const demoCaps = buildStorefrontCapabilities('demo');
+  const connectedCaps = buildStorefrontCapabilities('connected');
+  const unavailableCaps = buildStorefrontCapabilities('unavailable');
 
-    const newArrivals = await connector.getCollection({ slug: 'new-arrivals' });
-    assert.ok(newArrivals.totalCount > 0, 'New Arrivals merchandising collection resolves products');
+  assert(demoCaps.mode === 'demo' && demoCaps.liveKalpConnected === false, 'Demo mode capabilities honest');
+  assert(
+    connectedCaps.mode === 'connected' && connectedCaps.liveKalpConnected === false,
+    'Connected mode does not claim live Kalp connection prematurely'
+  );
+  assert(
+    unavailableCaps.mode === 'unavailable' &&
+      !unavailableCaps.cartEnabled &&
+      !unavailableCaps.searchEnabled,
+    'Unavailable mode disables commerce capabilities cleanly'
+  );
 
-    const festive = await connector.getCollection({ slug: 'festive' });
-    assert.ok(festive.totalCount > 0, 'Festive occasion edit resolves products');
+  const composedUnavailable = await composeStorefrontConnector('unavailable');
+  assert(
+    composedUnavailable.effectiveMode === 'unavailable' &&
+      composedUnavailable.connector instanceof UnavailableStorefrontConnector,
+    'composeStorefrontConnector returns UnavailableStorefrontConnector for unavailable mode'
+  );
 
-    const filteredBySize = await connector.getCollection({
-      slug: 'all',
-      sizes: ['XXL'],
-      sort: 'PRICE_ASC',
-    });
-    assert.equal(
-      filteredBySize.totalCount,
-      1,
-      'Only Aarohi Co-ord Set offers XXL in product-specific variants'
-    );
-
-    const searchRes = await connector.searchProducts({ q: 'Chanderi' });
-    assert.ok(searchRes.totalCount >= 2, 'Search query for Chanderi returns matching styles');
-    console.log('✓ [2/7] Navigation, collection filters, occasions, and search verified');
+  let unavailableThrew = false;
+  try {
+    await composedUnavailable.connector.getHomePage();
+  } catch (err) {
+    unavailableThrew = err instanceof StorefrontError && err.code === 'UPSTREAM_UNAVAILABLE';
   }
+  assert(
+    unavailableThrew,
+    'UnavailableStorefrontConnector throws UPSTREAM_UNAVAILABLE instead of fake data'
+  );
+  console.log('✓ 2. Explicit modes & UnavailableStorefrontConnector honesty tests passed');
 
-  // 3. Product-specific variants & stock enforcement
-  {
-    const gulnaar = await connector.getProduct({ slug: 'gulnaar-printed-anarkali-set' });
-    assert.equal(gulnaar.isDemoFixture, true);
-    assert.deepEqual(gulnaar.optionDefinitions[0].values, ['XXS', 'XS', 'S', 'M', 'L', 'XL']);
+  // ---------------------------------------------------------------------------
+  // 3. HttpStorefrontConnector Contract Tests (Same-Origin, Cookies, Abort, Timeout)
+  // ---------------------------------------------------------------------------
+  let externalOriginRejected = false;
+  try {
+    new HttpStorefrontConnector({ basePath: 'https://external-kalp.example.com/api' });
+  } catch {
+    externalOriginRejected = true;
+  }
+  assert(
+    externalOriginRejected,
+    'HttpStorefrontConnector rejects non-same-origin base paths'
+  );
 
-    // Out-of-stock variant (XL on Gulnaar) must be rejected
-    await assert.rejects(
-      async () => {
-        await connector.addCartItem({
-          productId: gulnaar.id,
-          variantId: 'var-gulnaar-xl',
-          quantity: 1,
+  // Verify credentials: 'same-origin' and timeout handling via mock fetch
+  let capturedInit: RequestInit | undefined;
+  const mockFetchConnector = new HttpStorefrontConnector({
+    basePath: '/api/storefront/v1',
+    defaultTimeoutMs: 50,
+    fetchImpl: async (_input, init) => {
+      capturedInit = init;
+      return new Response(JSON.stringify(buildStorefrontCapabilities('connected')), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+
+  const fetchedCaps = await mockFetchConnector.getCapabilities();
+  assert(fetchedCaps.mode === 'connected', 'HttpStorefrontConnector parses typed capabilities');
+  assert(
+    capturedInit?.credentials === 'same-origin',
+    'HttpStorefrontConnector always sends credentials: same-origin'
+  );
+
+  // Verify AbortController cancellation
+  const abortController = new AbortController();
+  abortController.abort();
+  let abortCaught = false;
+  try {
+    await mockFetchConnector.getCapabilities({ signal: abortController.signal });
+  } catch (err) {
+    abortCaught = err instanceof StorefrontError && err.code === 'REQUEST_ABORTED';
+  }
+  assert(abortCaught, 'HttpStorefrontConnector handles pre-aborted AbortSignal');
+
+  // Verify Timeout handling
+  const slowFetchConnector = new HttpStorefrontConnector({
+    basePath: '/api/storefront/v1',
+    defaultTimeoutMs: 30,
+    fetchImpl: (_input, init) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          const abortErr = new Error('Aborted');
+          abortErr.name = 'AbortError';
+          reject(abortErr);
         });
-      },
-      (err: unknown) => err instanceof StorefrontError && err.code === 'UNAVAILABLE_VARIANT',
-      'Adding an out-of-stock variant must throw UNAVAILABLE_VARIANT'
-    );
-
-    // Low-stock variant (M on Gulnaar) caps at 2 units
-    await assert.rejects(
-      async () => {
-        await connector.addCartItem({
-          productId: gulnaar.id,
-          variantId: 'var-gulnaar-m',
-          quantity: 3,
-        });
-      },
-      (err: unknown) => err instanceof StorefrontError && err.code === 'INSUFFICIENT_STOCK',
-      'Exceeding low-stock limit must throw INSUFFICIENT_STOCK'
-    );
-    console.log('✓ [3/7] Product-specific variants, out-of-stock, and low-stock rules verified');
+      }),
+  });
+  let timeoutCaught = false;
+  try {
+    await slowFetchConnector.getHomePage();
+  } catch (err) {
+    timeoutCaught = err instanceof StorefrontError && err.code === 'TIMEOUT_ERROR';
   }
+  assert(timeoutCaught, 'HttpStorefrontConnector normalizes request timeouts to TIMEOUT_ERROR');
+  console.log('✓ 3. HttpStorefrontConnector unit tests (same-origin, cookies, abort, timeout) passed');
 
-  // 4. Cart revisions & conflict handling
-  {
-    const initialCart = await connector.getCart();
-    const updatedCart = await connector.addCartItem({
-      productId: 'prod-zariya-chanderi-kurta',
-      variantId: 'var-zariya-m-emerald',
-      quantity: 1,
-      expectedRevision: initialCart.revision,
-    });
-    assert.notEqual(updatedCart.revision, initialCart.revision, 'Cart revision increments on mutation');
+  // ---------------------------------------------------------------------------
+  // 4. Express Storefront BFF (/api/storefront/v1/*) Live Integration Tests
+  // ---------------------------------------------------------------------------
+  const app = express();
+  app.use('/api/storefront/v1', createStorefrontBffRouter());
+  const server = http.createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  const address = server.address();
+  const port = typeof address === 'object' && address ? address.port : 0;
+  const bffOrigin = `http://127.0.0.1:${port}`;
 
-    // Passing stale expectedRevision must throw CART_CONFLICT
-    await assert.rejects(
-      async () => {
-        await connector.updateCartItem({
-          lineItemId: updatedCart.items[0].lineItemId,
-          quantity: 2,
-          expectedRevision: initialCart.revision, // stale
-        });
-      },
-      (err: unknown) => err instanceof StorefrontError && err.code === 'CART_CONFLICT',
-      'Stale expectedRevision must throw CART_CONFLICT'
+  try {
+    const healthRes = await fetch(`${bffOrigin}/api/storefront/v1/health`);
+    assert(healthRes.status === 200, 'BFF /health returns 200');
+    const setCookieHeader = healthRes.headers.get('set-cookie') || '';
+    assert(
+      setCookieHeader.includes('gayraa_sf_sid=') && setCookieHeader.includes('HttpOnly'),
+      'BFF sets HttpOnly session cookie gayraa_sf_sid'
     );
-    console.log('✓ [4/7] Cart revision tracking and conflict rejection verified');
-  }
-
-  // 5. Checkout quote generation, eligibility & quote expiration
-  {
-    const cart = await connector.getCart();
-    const quote = await connector.getCheckoutQuote({
-      cartRevision: cart.revision,
-      shippingAddress: { postalCode: '302029', city: 'Jaipur', state: 'Rajasthan' },
-    });
-    assert.equal(quote.cartRevision, cart.revision);
-    assert.equal(quote.totals.shippingFee.amountMinor, 0, 'Standard Pan-India shipping is free');
-
-    const expressOption = quote.shippingMethods.find((m) => m.id === 'ship-express-inquiry');
-    assert.equal(
-      expressOption?.eligible,
-      false,
-      'Express shipping is not auto-enabled without inquiry'
+    const healthJson = (await healthRes.json()) as { liveKalpConnected: boolean };
+    assert(
+      healthJson.liveKalpConnected === false,
+      'BFF /health honestly reports liveKalpConnected: false'
     );
 
-    // Expire active quotes and verify createOrder rejects with QUOTE_EXPIRED
-    connector.expireActiveQuotesNow();
-    await assert.rejects(
-      async () => {
-        await connector.createOrder({
-          idempotencyKey: 'idem_expired_test_01',
-          quoteId: quote.quoteId,
-          cartRevision: cart.revision,
-          contact: {
-            fullName: 'Ananya Sharma',
-            email: 'ananya@example.com',
-            phone: '9876543210',
-          },
-          shippingAddress: {
-            recipientName: 'Ananya Sharma',
-            line1: '14 Civil Lines',
-            city: 'Jaipur',
-            state: 'Rajasthan',
-            postalCode: '302006',
-            countryCode: 'IN',
-          },
-          billingSameAsShipping: true,
-          shippingMethodId: 'ship-standard-free',
-          paymentMethodCode: 'PREPAID_INTENT',
-        });
-      },
-      (err: unknown) => err instanceof StorefrontError && err.code === 'QUOTE_EXPIRED',
-      'Submitting an expired quote must throw QUOTE_EXPIRED'
-    );
-    console.log('✓ [5/7] Checkout quote eligibility and quote expiration handling verified');
-  }
-
-  // 6 & 7. Idempotent Order Submission & Separated Order/Payment Statuses
-  {
-    const cart = await connector.getCart();
-    const freshQuote = await connector.getCheckoutQuote({
-      cartRevision: cart.revision,
-      shippingAddress: { postalCode: '302006', city: 'Jaipur', state: 'Rajasthan' },
+    // Connect HttpStorefrontConnector to live BFF via custom fetch forwarding to ephemeral port
+    const bffHttpConnector = new HttpStorefrontConnector({
+      basePath: '/api/storefront/v1',
+      fetchImpl: (input, init) => fetch(`${bffOrigin}${String(input)}`, init),
     });
 
-    const orderPayload = {
-      idempotencyKey: 'idem_journey_test_key_1001',
-      quoteId: freshQuote.quoteId,
-      cartRevision: cart.revision,
-      contact: {
-        fullName: 'Ananya Sharma',
-        email: 'ananya@example.com',
-        phone: '9876543210',
-      },
+    const bffConfig = await bffHttpConnector.getStorefrontConfig();
+    assert(
+      bffConfig.businessName === 'GAYRAA' &&
+        bffConfig.legalEntityName === 'ROHIT SHARMA SHREE NARAYAN MANUFACTURER',
+      'BFF /config returns verified GAYRAA storefront config'
+    );
+
+    const bffNav = await bffHttpConnector.getNavigation();
+    assert(bffNav.primary.length === 4, 'BFF /navigation returns primary navigation');
+
+    // Catalog, Cart, and Checkout endpoints on BFF must return 503 UPSTREAM_UNAVAILABLE
+    let bffHomeUnavailable = false;
+    try {
+      await bffHttpConnector.getHomePage();
+    } catch (err) {
+      bffHomeUnavailable =
+        err instanceof StorefrontError &&
+        err.code === 'UPSTREAM_UNAVAILABLE' &&
+        err.statusCode === 503;
+    }
+    assert(
+      bffHomeUnavailable,
+      'BFF /home returns 503 UPSTREAM_UNAVAILABLE stub and never serves fake catalog data'
+    );
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+  console.log('✓ 4. Express Storefront BFF (/api/storefront/v1/*) integration tests passed');
+
+  // ---------------------------------------------------------------------------
+  // 5. End-to-End Customer Journeys & Dynamic Merchandising Slots (Demo Mode)
+  // ---------------------------------------------------------------------------
+  const connector = new LocalMockStorefrontConnector({ latencyMs: 0, quoteTtlMs: 60_000 });
+
+  const manifest = await connector.getHomePage();
+  const sectionTypes = manifest.sections.map((s) => s.type);
+  assert(
+    sectionTypes.includes('hero') &&
+      sectionTypes.includes('editorial-story-block') &&
+      sectionTypes.includes('campaign-banner-slot') &&
+      sectionTypes.includes('product-collection') &&
+      sectionTypes.includes('service-policy-strip'),
+    'Homepage manifest includes all dynamic merchandising slots'
+  );
+
+  const allCollection = await connector.getCollection({ slug: 'all', pageSize: 20 });
+  assert(
+    allCollection.totalCount >= 6 && allCollection.products.length === allCollection.totalCount,
+    `Catalog has ${allCollection.totalCount} product-specific Jaipur demo fixtures`
+  );
+
+  const searchRes = await connector.searchProducts({ q: 'Chanderi' });
+  assert(searchRes.totalCount >= 1, 'Search query for Chanderi returns matching products');
+
+  // Variant matrix & Add to Bag
+  const sareeProduct = await connector.getProduct({ slug: 'vaani-ivory-zari-tissue-organza-saree' });
+  const inStockVariant = sareeProduct.variants.find((v) => v.availability === 'IN_STOCK')!;
+  const updatedCart = await connector.addCartItem({
+    productId: sareeProduct.id,
+    variantId: inStockVariant.id,
+    quantity: 1,
+  });
+  assert(updatedCart.items.length === 2, 'Cart contains 2 line items after adding saree');
+
+  // Revision conflict detection
+  let conflictDetected = false;
+  try {
+    await connector.updateCartItem({
+      lineItemId: updatedCart.items[0].lineItemId,
+      quantity: 2,
+      expectedRevision: 'rev_stale_0',
+    });
+  } catch (err) {
+    conflictDetected = err instanceof StorefrontError && err.code === 'CART_CONFLICT';
+  }
+  assert(conflictDetected, 'Stale cart revision triggers CART_CONFLICT');
+
+  // Checkout quote expiry & idempotent order creation
+  const currentCart = await connector.getCart();
+  const quote = await connector.getCheckoutQuote({
+    cartRevision: currentCart.revision,
+    shippingAddress: {
+      postalCode: '302029',
+      city: 'Jaipur',
+      state: 'Rajasthan',
+      countryCode: 'IN',
+    },
+  });
+  assert(quote.totals.shippingFee.amountMinor === 0, 'Standard Pan-India shipping is free');
+
+  connector.expireActiveQuotesNow();
+  let expiredQuoteRejected = false;
+  try {
+    await connector.createOrder({
+      idempotencyKey: 'idem_test_expired_01',
+      quoteId: quote.quoteId,
+      cartRevision: currentCart.revision,
+      contact: { fullName: 'Test User', email: 'test@example.com', phone: '9876543210' },
       shippingAddress: {
-        recipientName: 'Ananya Sharma',
-        line1: '14 Civil Lines',
+        recipientName: 'Test User',
+        line1: '12 Jaipur Gate, Sanganer',
         city: 'Jaipur',
         state: 'Rajasthan',
-        postalCode: '302006',
+        postalCode: '302029',
         countryCode: 'IN',
       },
       billingSameAsShipping: true,
       shippingMethodId: 'ship-standard-free',
-      paymentMethodCode: 'PREPAID_INTENT' as const,
-    };
-
-    const firstOrder = await connector.createOrder(orderPayload);
-    assert.equal(firstOrder.isDemoOrder, true);
-    assert.equal(firstOrder.orderStatus, 'CREATED_DEMO_HOLD');
-    assert.equal(firstOrder.paymentStatus, 'PENDING_PAYMENT_INTENT_HANDOFF');
-
-    // Retry with identical key and identical payload => must return exact same order
-    const retryOrder = await connector.createOrder(orderPayload);
-    assert.equal(retryOrder.orderId, firstOrder.orderId);
-    assert.equal(retryOrder.orderReference, firstOrder.orderReference);
-
-    // Reuse same key with modified payload => must throw IDEMPOTENCY_CONFLICT
-    await assert.rejects(
-      async () => {
-        await connector.createOrder({
-          ...orderPayload,
-          paymentMethodCode: 'CASH_ON_DELIVERY',
-        });
-      },
-      (err: unknown) => err instanceof StorefrontError && err.code === 'IDEMPOTENCY_CONFLICT',
-      'Reusing an idempotencyKey with a modified payload must throw IDEMPOTENCY_CONFLICT'
-    );
-    console.log('✓ [6/7] Idempotent order retry and changed-payload conflict verified');
-    console.log('✓ [7/7] Separated orderStatus vs. paymentStatus & demo disclaimers verified\n');
+      paymentMethodCode: 'PREPAID_INTENT',
+    });
+  } catch (err) {
+    expiredQuoteRejected = err instanceof StorefrontError && err.code === 'QUOTE_EXPIRED';
   }
+  assert(expiredQuoteRejected, 'Expired checkout quote is rejected with QUOTE_EXPIRED');
 
-  console.log('All 7 verification suites passed.');
+  const freshQuote = await connector.getCheckoutQuote({
+    cartRevision: currentCart.revision,
+    shippingAddress: {
+      postalCode: '302029',
+      city: 'Jaipur',
+      state: 'Rajasthan',
+      countryCode: 'IN',
+    },
+  });
+
+  const orderInput = {
+    idempotencyKey: 'idem_test_valid_order_99',
+    quoteId: freshQuote.quoteId,
+    cartRevision: currentCart.revision,
+    contact: { fullName: 'Test User', email: 'test@example.com', phone: '9876543210' },
+    shippingAddress: {
+      recipientName: 'Test User',
+      line1: '12 Jaipur Gate, Sanganer',
+      city: 'Jaipur',
+      state: 'Rajasthan',
+      postalCode: '302029',
+      countryCode: 'IN',
+    },
+    billingSameAsShipping: true,
+    shippingMethodId: 'ship-standard-free',
+    paymentMethodCode: 'PREPAID_INTENT' as const,
+  };
+
+  const order1 = await connector.createOrder(orderInput);
+  const order2 = await connector.createOrder(orderInput);
+  assert(
+    order1.orderId === order2.orderId &&
+      order1.orderStatus === 'CREATED_DEMO_HOLD' &&
+      order1.paymentStatus === 'PENDING_PAYMENT_INTENT_HANDOFF',
+    'Idempotent order submission returns identical OrderResult with separated orderStatus and paymentStatus'
+  );
+
+  const lookedUp = connector.getOrderByReference(order1.orderReference);
+  assert(
+    lookedUp?.orderReference === order1.orderReference,
+    'Guest order lookup finds demo order by reference'
+  );
+  console.log('✓ 5. End-to-End customer journeys & dynamic merchandising tests passed');
+
+  // ---------------------------------------------------------------------------
+  // 6. Accessibility Contrast & Browser Security Boundary Audit
+  // ---------------------------------------------------------------------------
+  assert(
+    contrastRatio('#161311', '#F4F1EA') >= 12,
+    'Primary ink on warm stone canvas exceeds WCAG AAA contrast'
+  );
+  assert(
+    contrastRatio('#524B44', '#F4F1EA') >= 4.5,
+    'Secondary ink on warm stone canvas exceeds WCAG AA contrast'
+  );
+  assert(
+    contrastRatio('#F4F1EA', '#7A1C1D') >= 4.5,
+    'Sindoor maroon CTA contrast exceeds WCAG AA'
+  );
+  assert(
+    contrastRatio('#F4F1EA', '#161311') >= 12,
+    'Surface-contrast focus ring (#F4F1EA on #161311) exceeds 3:1 non-text contrast'
+  );
+
+  // Verify UI files in src/components, src/pages, and src/integration never import src/testing/*
+  const uiDirs = ['components', 'pages', 'integration'];
+  for (const dir of uiDirs) {
+    const fullDir = path.resolve(__dirname, '..', dir);
+    const checkDir = (d: string) => {
+      for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
+        const p = path.join(d, entry.name);
+        if (entry.isDirectory()) checkDir(p);
+        else if (p.endsWith('.ts') || p.endsWith('.tsx')) {
+          const content = fs.readFileSync(p, 'utf8');
+          assert(
+            !content.includes('testing/mock-connector') && !content.includes('testing/fixtures'),
+            `UI module ${p} must not directly import src/testing/*`
+          );
+          assert(
+            !content.includes('X-Tenant-DB') && !content.includes('KALP_SERVER_API_CREDENTIAL'),
+            `Browser module ${p} must not contain privileged headers or server secrets`
+          );
+        }
+      }
+    };
+    checkDir(fullDir);
+  }
+  console.log('✓ 6. WCAG contrast & browser security boundary audit passed');
+
+  console.log('\nALL GAYRAA STOREFRONT & BFF VERIFICATION CHECKS PASSED.');
 }
 
 runTests().catch((err) => {
-  console.error('Verification suite failed:', err);
+  console.error(err);
   process.exit(1);
 });

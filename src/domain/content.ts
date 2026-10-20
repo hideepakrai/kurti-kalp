@@ -1,15 +1,21 @@
 /**
- * Framework-independent CMS Content, Navigation, Policy, and PageManifest domain contracts.
+ * Framework-independent CMS Content, Navigation, Policy, Capabilities,
+ * Runtime Modes, and PageManifest domain contracts.
  */
 
 import { MediaAsset } from './catalog';
 
+export type StorefrontRuntimeMode = 'demo' | 'connected' | 'unavailable';
+
 export interface StorefrontCapabilities {
   stage: 'STAGE_A_MOCK_PROTOTYPE' | 'STAGE_B_CONNECTED';
+  mode: StorefrontRuntimeMode;
   liveKalpConnected: boolean;
   searchEnabled: boolean;
   cartEnabled: boolean;
   checkoutQuoteEnabled: boolean;
+  orderLookupEnabled: boolean;
+  selfServeExchangeEnabled: boolean;
   customerAccountsEnabled: boolean;
   wishlistEnabled: boolean;
   supportedHeroVariants: Array<'layered-typographic' | 'split-editorial'>;
@@ -53,6 +59,10 @@ export interface NavigationLinkItem {
   href: string;
   description?: string;
   badge?: string;
+  requiresCapability?: keyof Pick<
+    StorefrontCapabilities,
+    'orderLookupEnabled' | 'selfServeExchangeEnabled' | 'customerAccountsEnabled' | 'wishlistEnabled'
+  >;
 }
 
 export interface NavigationGroup {
@@ -71,6 +81,10 @@ export interface Navigation {
       label: string;
       href?: string;
       policyId?: 'shipping' | 'exchange' | 'privacy' | 'terms';
+      requiresCapability?: keyof Pick<
+        StorefrontCapabilities,
+        'orderLookupEnabled' | 'selfServeExchangeEnabled' | 'customerAccountsEnabled' | 'wishlistEnabled'
+      >;
     }>;
   }>;
 }
@@ -132,6 +146,32 @@ export interface SeasonalCampaignSectionConfig {
   bannerImage: MediaAsset;
 }
 
+export interface EditorialStoryBlockSectionConfig {
+  id: string;
+  type: 'editorial-story-block';
+  enabled: boolean;
+  kicker: string;
+  headline: string;
+  paragraphs: string[];
+  craftHighlights: Array<{ label: string; detail: string }>;
+  ctaLabel: string;
+  ctaHref: string;
+  storyImage: MediaAsset;
+}
+
+export interface CampaignBannerSlotSectionConfig {
+  id: string;
+  type: 'campaign-banner-slot';
+  enabled: boolean;
+  slotKey: string;
+  surfaceTheme: 'stone' | 'contrast';
+  eyebrow: string;
+  headline: string;
+  subcopy: string;
+  ctaLabel: string;
+  ctaHref: string;
+}
+
 export interface ServicePolicyStripSectionConfig {
   id: string;
   type: 'service-policy-strip';
@@ -142,6 +182,7 @@ export interface ServicePolicyStripSectionConfig {
     title: string;
     subtitle: string;
     policyId?: 'shipping' | 'exchange' | 'privacy' | 'terms';
+    href?: string;
   }>;
 }
 
@@ -150,6 +191,8 @@ export type HomePageSection =
   | CategorySpotlightSectionConfig
   | ProductCollectionSectionConfig
   | SeasonalCampaignSectionConfig
+  | EditorialStoryBlockSectionConfig
+  | CampaignBannerSlotSectionConfig
   | ServicePolicyStripSectionConfig;
 
 export interface PageManifest {

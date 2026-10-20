@@ -10,6 +10,8 @@ export type AvailabilityStatus = 'IN_STOCK' | 'LOW_STOCK' | 'OUT_OF_STOCK';
 export interface MediaAsset {
   id: string;
   url: string;
+  srcSet?: string;
+  sizes?: string;
   alt: string;
   width: number;
   height: number;

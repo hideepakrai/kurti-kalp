@@ -18,6 +18,7 @@ import { useStorefront } from '../integration/StorefrontProvider';
 import { navigateTo, useRouter } from '../integration/hooks/useRouter';
 import { ProductGrid } from '../components/commerce/ProductGrid';
 import { Breadcrumbs } from '../components/layout/Breadcrumbs';
+import { UnavailableModePanel } from '../components/layout/UnavailableModePanel';
 import { Drawer } from '../components/ui/Drawer';
 import {
   EmptyStatePanel,
@@ -25,13 +26,95 @@ import {
   RecoverableErrorBanner,
 } from '../components/ui/StateFeedback';
 
+const VALID_SORT_OPTIONS: readonly SortOption[] = ['FEATURED', 'NEWEST', 'PRICE_ASC', 'PRICE_DESC'];
+
+export interface SanitizedCollectionParams {
+  q: string;
+  sizes: string[];
+  fabrics: string[];
+  maxPriceMinor?: number;
+  inStockOnly: boolean;
+  sort: SortOption;
+  page: number;
+  hadInvalidParams: boolean;
+}
+
+export function sanitizeCollectionSearchParams(
+  searchParams: URLSearchParams
+): SanitizedCollectionParams {
+  let hadInvalidParams = false;
+
+  const rawQ = (searchParams.get('q') || '').trim();
+  const q = rawQ.slice(0, 120);
+  if (rawQ.length > 120) hadInvalidParams = true;
+
+  const sizes = (searchParams.get('sizes') || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0 && s.length <= 32);
+
+  const fabrics = (searchParams.get('fabrics') || '')
+    .split(',')
+    .map((f) => f.trim())
+    .filter((f) => f.length > 0 && f.length <= 48);
+
+  const maxPriceParam = searchParams.get('maxPrice');
+  let maxPriceMinor: number | undefined = undefined;
+  if (maxPriceParam !== null && maxPriceParam !== '') {
+    const parsedPrice = Number(maxPriceParam);
+    if (Number.isInteger(parsedPrice) && parsedPrice > 0 && parsedPrice <= 10_000_000) {
+      maxPriceMinor = parsedPrice;
+    } else {
+      hadInvalidParams = true;
+    }
+  }
+
+  const inStockParam = searchParams.get('inStock');
+  if (inStockParam !== null && inStockParam !== '1' && inStockParam !== '0' && inStockParam !== 'true') {
+    hadInvalidParams = true;
+  }
+  const inStockOnly = inStockParam === '1' || inStockParam === 'true';
+
+  const sortParam = searchParams.get('sort');
+  let sort: SortOption = 'FEATURED';
+  if (sortParam !== null && sortParam !== '') {
+    if (VALID_SORT_OPTIONS.includes(sortParam as SortOption)) {
+      sort = sortParam as SortOption;
+    } else {
+      hadInvalidParams = true;
+    }
+  }
+
+  const pageParam = searchParams.get('page');
+  let page = 1;
+  if (pageParam !== null && pageParam !== '') {
+    const parsedPage = Number(pageParam);
+    if (Number.isInteger(parsedPage) && parsedPage >= 1 && parsedPage <= 500) {
+      page = parsedPage;
+    } else {
+      hadInvalidParams = true;
+    }
+  }
+
+  return {
+    q,
+    sizes,
+    fabrics,
+    maxPriceMinor,
+    inStockOnly,
+    sort,
+    page,
+    hadInvalidParams,
+  };
+}
+
 interface CollectionPageProps {
   mode: 'collection' | 'search';
   collectionSlug?: string;
 }
 
 export function CollectionPage({ mode, collectionSlug = 'all' }: CollectionPageProps) {
-  const { connector } = useStorefront();
+  const { connector, upstreamUnavailableReason } = useStorefront();
   const { pathname, searchParams } = useRouter();
 
   const [allCollections, setAllCollections] = useState<CollectionMetadata[]>([]);
@@ -40,21 +123,15 @@ export function CollectionPage({ mode, collectionSlug = 'all' }: CollectionPageP
   const [error, setError] = useState<StorefrontError | null>(null);
   const [isMobileFilterOpen, setIsMobileFilterOpen] = useState<boolean>(false);
 
-  // Parse active filter state from URL query params
-  const searchQueryText = searchParams.get('q') || '';
-  const selectedSizes = (searchParams.get('sizes') || '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const selectedFabrics = (searchParams.get('fabrics') || '')
-    .split(',')
-    .map((f) => f.trim())
-    .filter(Boolean);
-  const maxPriceParam = searchParams.get('maxPrice');
-  const maxPriceMinor = maxPriceParam ? Number(maxPriceParam) : undefined;
-  const inStockOnly = searchParams.get('inStock') === '1';
-  const sort = (searchParams.get('sort') as SortOption) || 'FEATURED';
-  const page = Math.max(1, Number(searchParams.get('page') || '1'));
+  // Parse and sanitize active filter state from URL query params
+  const sanitized = sanitizeCollectionSearchParams(searchParams);
+  const searchQueryText = sanitized.q;
+  const selectedSizes = sanitized.sizes;
+  const selectedFabrics = sanitized.fabrics;
+  const maxPriceMinor = sanitized.maxPriceMinor;
+  const inStockOnly = sanitized.inStockOnly;
+  const sort = sanitized.sort;
+  const page = sanitized.page;
 
   const requestSeqRef = useRef(0);
 
@@ -213,6 +290,12 @@ export function CollectionPage({ mode, collectionSlug = 'all' }: CollectionPageP
     selectedFabrics.length +
     (maxPriceMinor ? 1 : 0) +
     (inStockOnly ? 1 : 0);
+
+  if (upstreamUnavailableReason || error?.code === 'UPSTREAM_UNAVAILABLE') {
+    return (
+      <UnavailableModePanel reason={error?.message || upstreamUnavailableReason || undefined} />
+    );
+  }
 
   // Unknown collection state
   if (error?.code === 'NOT_FOUND') {

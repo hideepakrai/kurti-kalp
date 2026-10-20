@@ -1,9 +1,8 @@
 /**
- * Proposed StorefrontConnector Interface (Stage A Prototype -> Stage B Kalp Target)
+ * StorefrontConnector Contract.
  *
- * Pages and presentation components must access commerce and CMS data strictly
- * through this interface. Note: @kalp/storefront-connector is a planned future
- * dependency; Stage A binds this contract to the local replaceable mock adapter.
+ * Pages and presentation components access commerce and CMS data strictly
+ * through this interface. Supports optional AbortSignal and timeout options.
  */
 
 import { Cart, AddCartItemInput, UpdateCartItemInput, RemoveCartItemInput } from '../domain/cart';
@@ -18,19 +17,24 @@ import {
 import { CheckoutQuote, CheckoutQuoteInput, CreateOrderInput, OrderResult } from '../domain/checkout';
 import { Navigation, PageManifest, StorefrontCapabilities, StorefrontConfig } from '../domain/content';
 
+export interface ConnectorRequestOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
 export interface StorefrontConnector {
-  getCapabilities(): Promise<StorefrontCapabilities>;
-  getStorefrontConfig(): Promise<StorefrontConfig>;
-  getNavigation(): Promise<Navigation>;
-  getHomePage(): Promise<PageManifest>;
-  getCollections(): Promise<CollectionMetadata[]>;
-  getCollection(query: CollectionQuery): Promise<CollectionResult>;
-  searchProducts(query: SearchQuery): Promise<CollectionResult>;
-  getProduct(query: ProductQuery): Promise<ProductDetail>;
-  getCart(): Promise<Cart>;
-  addCartItem(input: AddCartItemInput): Promise<Cart>;
-  updateCartItem(input: UpdateCartItemInput): Promise<Cart>;
-  removeCartItem(input: RemoveCartItemInput): Promise<Cart>;
-  getCheckoutQuote(input: CheckoutQuoteInput): Promise<CheckoutQuote>;
-  createOrder(input: CreateOrderInput): Promise<OrderResult>;
+  getCapabilities(options?: ConnectorRequestOptions): Promise<StorefrontCapabilities>;
+  getStorefrontConfig(options?: ConnectorRequestOptions): Promise<StorefrontConfig>;
+  getNavigation(options?: ConnectorRequestOptions): Promise<Navigation>;
+  getHomePage(options?: ConnectorRequestOptions): Promise<PageManifest>;
+  getCollections(options?: ConnectorRequestOptions): Promise<CollectionMetadata[]>;
+  getCollection(query: CollectionQuery, options?: ConnectorRequestOptions): Promise<CollectionResult>;
+  searchProducts(query: SearchQuery, options?: ConnectorRequestOptions): Promise<CollectionResult>;
+  getProduct(query: ProductQuery, options?: ConnectorRequestOptions): Promise<ProductDetail>;
+  getCart(options?: ConnectorRequestOptions): Promise<Cart>;
+  addCartItem(input: AddCartItemInput, options?: ConnectorRequestOptions): Promise<Cart>;
+  updateCartItem(input: UpdateCartItemInput, options?: ConnectorRequestOptions): Promise<Cart>;
+  removeCartItem(input: RemoveCartItemInput, options?: ConnectorRequestOptions): Promise<Cart>;
+  getCheckoutQuote(input: CheckoutQuoteInput, options?: ConnectorRequestOptions): Promise<CheckoutQuote>;
+  createOrder(input: CreateOrderInput, options?: ConnectorRequestOptions): Promise<OrderResult>;
 }

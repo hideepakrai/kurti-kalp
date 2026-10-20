@@ -1,7 +1,8 @@
 /**
- * StudioImage — Resilient, aspect-ratio-locked image component.
+ * StudioImage — Resilient, aspect-ratio-locked responsive image component.
  * Prioritizes hero images when requested and lazy-loads lower-page assets.
- * Provides an editorial fallback surface if an asset ever fails to load.
+ * Supports responsive `srcSet` and `sizes` attributes and provides an editorial
+ * fallback surface if an asset ever fails to load.
  */
 
 import React, { useState } from 'react';
@@ -10,6 +11,7 @@ import { MediaAsset } from '../../domain/catalog';
 interface StudioImageProps {
   asset: MediaAsset;
   priority?: boolean;
+  sizes?: string;
   className?: string;
   imageClassName?: string;
   showDemoBadge?: boolean;
@@ -18,6 +20,7 @@ interface StudioImageProps {
 export function StudioImage({
   asset,
   priority = false,
+  sizes,
   className = '',
   imageClassName = '',
   showDemoBadge = false,
@@ -33,6 +36,13 @@ export function StudioImage({
           ? 'aspect-[4/3]'
           : 'aspect-[3/4]';
 
+  const resolvedSizes =
+    sizes ||
+    asset.sizes ||
+    (priority
+      ? '(max-width: 1024px) 100vw, 50vw'
+      : '(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw');
+
   return (
     <div
       className={`relative overflow-hidden bg-[#EAE4D8] ${aspectClass} ${className}`}
@@ -40,10 +50,13 @@ export function StudioImage({
       {!hasError ? (
         <img
           src={asset.url}
+          srcSet={asset.srcSet}
+          sizes={resolvedSizes}
           alt={asset.alt}
           width={asset.width}
           height={asset.height}
           loading={priority ? 'eager' : 'lazy'}
+          decoding={priority ? 'sync' : 'async'}
           fetchPriority={priority ? 'high' : 'auto'}
           referrerPolicy="no-referrer"
           onError={() => setHasError(true)}

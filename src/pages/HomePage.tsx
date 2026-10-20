@@ -1,16 +1,18 @@
 /**
  * HomePage Template — Renders the ordered PageManifest sections returned by connector.getHomePage().
+ * Displays honest UnavailableModePanel when backend configuration is missing.
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { PageManifest } from '../domain/content';
 import { isStorefrontError, StorefrontError } from '../domain/errors';
 import { useStorefront } from '../integration/StorefrontProvider';
+import { UnavailableModePanel } from '../components/layout/UnavailableModePanel';
 import { SectionRenderer } from '../components/sections/SectionRenderer';
 import { ProductGridSkeleton, RecoverableErrorBanner } from '../components/ui/StateFeedback';
 
 export function HomePage() {
-  const { connector, heroVariantOverride } = useStorefront();
+  const { connector, heroVariantOverride, upstreamUnavailableReason } = useStorefront();
   const [manifest, setManifest] = useState<PageManifest | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<StorefrontError | null>(null);
@@ -39,6 +41,10 @@ export function HomePage() {
   useEffect(() => {
     void loadManifest();
   }, [loadManifest]);
+
+  if (upstreamUnavailableReason || error?.code === 'UPSTREAM_UNAVAILABLE') {
+    return <UnavailableModePanel reason={error?.message || upstreamUnavailableReason || undefined} />;
+  }
 
   if (loading && !manifest) {
     return (

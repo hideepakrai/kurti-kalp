@@ -23,11 +23,19 @@ import { ProductGrid } from '../components/commerce/ProductGrid';
 import { ProductOptionSelector } from '../components/commerce/ProductOptionSelector';
 import { SizeGuideModal } from '../components/commerce/SizeGuideModal';
 import { Breadcrumbs } from '../components/layout/Breadcrumbs';
+import { UnavailableModePanel } from '../components/layout/UnavailableModePanel';
 import { QuantityStepper } from '../components/ui/QuantityStepper';
 import { EmptyStatePanel, RecoverableErrorBanner } from '../components/ui/StateFeedback';
 
 export function ProductPage({ slug }: { slug: string }) {
-  const { connector, addToCart, addingToCart, openCartDrawer, openPolicyDrawer } = useStorefront();
+  const {
+    connector,
+    addToCart,
+    addingToCart,
+    openCartDrawer,
+    openPolicyDrawer,
+    upstreamUnavailableReason,
+  } = useStorefront();
 
   const [product, setProduct] = useState<ProductDetail | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
@@ -191,6 +199,12 @@ export function ProductPage({ slug }: { slug: string }) {
           </div>
         </div>
       </div>
+    );
+  }
+
+  if (upstreamUnavailableReason || error?.code === 'UPSTREAM_UNAVAILABLE') {
+    return (
+      <UnavailableModePanel reason={error?.message || upstreamUnavailableReason || undefined} />
     );
   }
 

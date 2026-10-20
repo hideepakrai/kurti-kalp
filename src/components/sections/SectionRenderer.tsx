@@ -5,7 +5,9 @@
 
 import React from 'react';
 import { HomePageSection } from '../../domain/content';
+import { CampaignBannerSlotSection } from './CampaignBannerSlotSection';
 import { CategorySpotlightStrip } from './CategorySpotlightStrip';
+import { EditorialStoryBlockSection } from './EditorialStoryBlockSection';
 import { HeroSection } from './HeroSection';
 import { ProductCollectionSection } from './ProductCollectionSection';
 import { SeasonalCampaignSection } from './SeasonalCampaignSection';
@@ -26,6 +28,10 @@ export function SectionRenderer({ sections }: { sections: HomePageSection[] }) {
             return <ProductCollectionSection key={section.id} config={section} />;
           case 'seasonal-campaign':
             return <SeasonalCampaignSection key={section.id} config={section} />;
+          case 'editorial-story-block':
+            return <EditorialStoryBlockSection key={section.id} config={section} />;
+          case 'campaign-banner-slot':
+            return <CampaignBannerSlotSection key={section.id} config={section} />;
           case 'service-policy-strip':
             return <ServicePolicyStrip key={section.id} config={section} />;
           default:

@@ -1,14 +1,15 @@
 /**
- * Homepage PageManifest Fixture (Stage A Prototype).
- * Renders the 8 ordered typed sections required by the specification:
- *  1. Announcement bar and navigation (rendered in App Shell from config)
- *  2. Editorial hero (configurable 'layered-typographic' or 'split-editorial')
- *  3. Three-category spotlight band (dark contrast strip)
- *  4. New Arrivals product section (resolved from catalog query)
- *  5. Seasonal/occasion campaign
- *  6. Best Sellers product section (resolved from catalog query)
- *  7. Accurate service and policy information
- *  8. Footer (rendered in App Shell from config)
+ * Homepage PageManifest Fixture (Development & Test Only).
+ *
+ * Includes CMS-ready dynamic merchandising slots:
+ * - Hero (layered-typographic & split-editorial variants)
+ * - Category Spotlight Band
+ * - Product Collection Slot (New Arrivals — prices/stock resolved live via connector)
+ * - Campaign Banner Slot (CMS promotional slot)
+ * - Seasonal/Occasion Campaign Split
+ * - Editorial Story Block (Sanganer Atelier block-print narrative)
+ * - Product Collection Slot (Best Sellers — prices/stock resolved live via connector)
+ * - Service & Policy Strip
  */
 
 import { PageManifest } from '../../domain/content';
@@ -143,15 +144,55 @@ export const DEMO_HOMEPAGE_MANIFEST: PageManifest = {
       },
     },
     {
+      id: 'sec-editorial-story',
+      type: 'editorial-story-block',
+      enabled: true,
+      kicker: 'SANGANER ATELIER STORY · CMS MERCHANDISING BLOCK',
+      headline: 'Rooted in Jaipur Textile Craft, Tailored for Unhurried Comfort',
+      paragraphs: [
+        'Each GAYRAA silhouette begins at our Jaipur studio—pairing breathable 60s-count mulmul, crisp cambric cotton, and luminous Chanderi silk with traditional hand-carved wooden block prints and restrained Zari detailing.',
+        'Rather than mass-produced fast fashion, our small-batch editions focus on honest fabric drape, thoughtful pocket placement, and transparent garment measurements so every piece moves effortlessly with you.',
+      ],
+      craftHighlights: [
+        { label: 'Breathable Weaves', detail: 'Mulmul cotton, cotton-flax slub & lined Chanderi silk' },
+        { label: 'Jaipur Origin', detail: 'Crafted and dispatched from Sanganer, Jaipur' },
+        { label: 'Transparent Fit', detail: 'Garment-level bust, waist, hip & length tables on every style' },
+      ],
+      ctaLabel: 'Read Atelier FAQ & Care Guide',
+      ctaHref: '/faq',
+      storyImage: {
+        id: 'media-story-textile',
+        url: '/assets/demo/detail-jaipur-textile.svg',
+        alt: 'Jaipur textile block-print and zari border detail illustration',
+        width: 900,
+        height: 1200,
+        aspectRatio: '3:4',
+        isDemoFixture: true,
+      },
+    },
+    {
       id: 'sec-best-sellers',
       type: 'product-collection',
       enabled: true,
       title: 'BEST OF GAYRAA',
-      subtitle: 'Most-loved ethnic and Indo-western sets resolved live from catalog fixtures.',
+      subtitle: 'Most-loved ethnic and Indo-western sets resolved live from catalog connector.',
       collectionSlug: 'best-sellers',
       limit: 4,
       ctaLabel: 'VIEW ALL BEST SELLERS',
       ctaHref: '/collections/best-sellers',
+    },
+    {
+      id: 'sec-campaign-slot-bottom',
+      type: 'campaign-banner-slot',
+      enabled: true,
+      slotKey: 'home-footer-lead-banner',
+      surfaceTheme: 'stone',
+      eyebrow: 'CURATED BY SILHOUETTE',
+      headline: 'Looking for Lightweight Organza Sarees or Draped Indo-Western Sets?',
+      subcopy:
+        'Explore our complete Jaipur catalog with live size, fabric, and price filters—backed by complimentary standard pan-India delivery.',
+      ctaLabel: 'Browse Complete Catalog',
+      ctaHref: '/collections/all',
     },
     {
       id: 'sec-service-policy',
@@ -171,20 +212,21 @@ export const DEMO_HOMEPAGE_MANIFEST: PageManifest = {
           title: 'LIMITED 3-DAY EXCHANGE',
           subtitle: 'Size or defect issues only with Order ID · Customer-shipped return · No refunds',
           policyId: 'exchange',
+          href: '/exchange/request',
         },
         {
           id: 'pol-craft',
           iconName: 'sparkles',
           title: 'JAIPUR ARTISAN CRAFT',
           subtitle: 'Conscious fabrics with detailed garment measurement guides on every piece',
-          policyId: 'terms',
+          href: '/faq',
         },
         {
           id: 'pol-checkout',
           iconName: 'shield',
-          title: 'VERIFIED CHECKOUT FLOW',
-          subtitle: 'Server-quoted totals with Prepaid Intent & eligible COD placeholders',
-          policyId: 'privacy',
+          title: 'ATELIER CLIENT CARE',
+          subtitle: 'Direct assistance Monday–Saturday (11 AM – 6 PM IST) from Sanganer, Jaipur',
+          href: '/support',
         },
       ],
     },

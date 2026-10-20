@@ -1,7 +1,6 @@
 /**
  * Navigation Configuration for GAYRAA Storefront.
- * Separates merchandising collections (New Arrivals, Best Sellers),
- * product categories (All Collections), and occasion queries (Shop by Occasion).
+ * Includes primary catalog/occasion navigation and footer links to lean customer-facing route shells.
  */
 
 import { Navigation } from '../domain/content';
@@ -120,24 +119,25 @@ export const GAYRAA_NAVIGATION: Navigation = {
       ],
     },
     {
-      id: 'footer-occasions',
-      title: 'Shop by Occasion',
+      id: 'footer-care-support',
+      title: 'Client Care & Assistance',
       links: [
-        { label: 'Wedding Guest Edit', href: '/collections/wedding' },
-        { label: 'Festive Celebrations', href: '/collections/festive' },
-        { label: 'Everyday Casual', href: '/collections/casual' },
-        { label: 'Office & Workwear', href: '/collections/office' },
-        { label: 'Vacation & Resort', href: '/collections/vacation' },
+        { label: 'Order Status Lookup', href: '/order-lookup', requiresCapability: 'orderLookupEnabled' },
+        { label: '3-Day Exchange Request', href: '/exchange/request', requiresCapability: 'selfServeExchangeEnabled' },
+        { label: 'Atelier Support & Contact', href: '/support' },
+        { label: 'Frequently Asked Questions', href: '/faq' },
+        { label: 'Customer Account Orders', href: '/account/orders', requiresCapability: 'customerAccountsEnabled' },
+        { label: 'Saved Styles', href: '/saved', requiresCapability: 'wishlistEnabled' },
       ],
     },
     {
       id: 'footer-policies',
-      title: 'Customer Policies',
+      title: 'Policies & Legal',
       links: [
         { label: 'Shipping & 48h Dispatch Policy', policyId: 'shipping' },
         { label: 'Limited 3-Day Exchange Policy', policyId: 'exchange' },
         { label: 'Privacy & Data Boundaries', policyId: 'privacy' },
-        { label: 'Terms of Service & Demo Info', policyId: 'terms' },
+        { label: 'Terms of Service & Mode Info', policyId: 'terms' },
       ],
     },
   ],

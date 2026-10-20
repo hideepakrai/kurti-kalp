@@ -8,6 +8,7 @@ import React from 'react';
 import { RefreshCw, ShieldCheck, Sparkles, Truck } from 'lucide-react';
 import { ServicePolicyStripSectionConfig } from '../../domain/content';
 import { useStorefront } from '../../integration/StorefrontProvider';
+import { navigateTo } from '../../integration/hooks/useRouter';
 
 export function ServicePolicyStrip({
   config,
@@ -47,15 +48,29 @@ export function ServicePolicyStrip({
                   {item.title}
                 </h3>
                 <p className="mt-1 text-xs leading-relaxed text-[#524B44]">{item.subtitle}</p>
-                {item.policyId && (
-                  <button
-                    type="button"
-                    onClick={(e) => openPolicyDrawer(item.policyId!, e.currentTarget)}
-                    className="mt-2 text-[11px] font-semibold text-[#7A1C1D] underline underline-offset-4 hover:text-[#161311]"
-                  >
-                    View Policy Details
-                  </button>
-                )}
+                <div className="mt-2.5 flex flex-wrap items-center gap-3">
+                  {item.policyId && (
+                    <button
+                      type="button"
+                      onClick={(e) => openPolicyDrawer(item.policyId!, e.currentTarget)}
+                      className="text-[11px] font-semibold text-[#7A1C1D] underline underline-offset-4 hover:text-[#161311]"
+                    >
+                      Policy Details
+                    </button>
+                  )}
+                  {item.href && (
+                    <a
+                      href={item.href}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        navigateTo(item.href!);
+                      }}
+                      className="text-[11px] font-semibold text-[#161311] underline underline-offset-4 hover:text-[#7A1C1D]"
+                    >
+                      Open Guide
+                    </a>
+                  )}
+                </div>
               </div>
             </div>
           ))}

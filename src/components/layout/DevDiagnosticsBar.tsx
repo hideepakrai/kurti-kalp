@@ -10,13 +10,13 @@ import { useStorefront } from '../../integration/StorefrontProvider';
 import { useRouter } from '../../integration/hooks/useRouter';
 
 export function DevDiagnosticsBar() {
-  const { mockAdapter, cart, heroVariantOverride, setHeroVariantOverride, refreshCart } =
+  const { devController, cart, heroVariantOverride, setHeroVariantOverride, refreshCart } =
     useStorefront();
   const { searchParams } = useRouter();
 
   // Strictly gate behind development mode AND explicit ?dev=1 query flag
   const isDevFlagged = import.meta.env.DEV && searchParams.get('dev') === '1';
-  if (!isDevFlagged || !mockAdapter) return null;
+  if (!isDevFlagged || !devController) return null;
 
   return (
     <aside
@@ -50,7 +50,7 @@ export function DevDiagnosticsBar() {
           <button
             type="button"
             onClick={() => {
-              mockAdapter.setSimulationOptions({ forceNextError: 'NETWORK_FAILURE' });
+              devController.setSimulationOptions({ forceNextError: 'NETWORK_FAILURE' });
             }}
             className="border border-[#961B1E] bg-[#FDECEC] px-2.5 py-1 text-[11px] font-semibold text-[#961B1E]"
           >
@@ -60,7 +60,7 @@ export function DevDiagnosticsBar() {
           <button
             type="button"
             onClick={() => {
-              mockAdapter.bumpCartRevisionExternally();
+              devController.bumpCartRevisionExternally();
               void refreshCart();
             }}
             className="border border-[#7C4700] bg-[#FDF3E7] px-2.5 py-1 text-[11px] font-semibold text-[#7C4700]"
@@ -71,7 +71,7 @@ export function DevDiagnosticsBar() {
           <button
             type="button"
             onClick={() => {
-              mockAdapter.expireActiveQuotesNow();
+              devController.expireActiveQuotesNow();
             }}
             className="border border-[#7C4700] bg-[#FDF3E7] px-2.5 py-1 text-[11px] font-semibold text-[#7C4700]"
           >

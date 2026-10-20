@@ -1,6 +1,6 @@
 /**
  * Footer — Surface-contrast footer with GAYRAA Jaipur contact information,
- * navigation columns, policy triggers, and explicit Stage A / Stage B handoff status.
+ * navigation columns gated by capability flags, policy triggers, and explicit mode status.
  */
 
 import React from 'react';
@@ -8,7 +8,7 @@ import { useStorefront } from '../../integration/StorefrontProvider';
 import { navigateTo } from '../../integration/hooks/useRouter';
 
 export function Footer() {
-  const { config, navigation, openPolicyDrawer } = useStorefront();
+  const { config, navigation, capabilities, runtimeMode, openPolicyDrawer } = useStorefront();
 
   if (!config || !navigation) return null;
 
@@ -56,39 +56,47 @@ export function Footer() {
 
           {/* Navigation & Policy Columns */}
           <div className="grid grid-cols-1 gap-8 sm:grid-cols-3 lg:col-span-7">
-            {navigation.footerColumns.map((col) => (
-              <div key={col.id}>
-                <h2 className="text-xs font-semibold tracking-[0.16em] text-[#F4F1EA] uppercase">
-                  {col.title}
-                </h2>
-                <ul className="mt-4 space-y-2.5 text-xs text-[#C8C0B4]">
-                  {col.links.map((link) => (
-                    <li key={link.label}>
-                      {link.policyId ? (
-                        <button
-                          type="button"
-                          onClick={(e) => openPolicyDrawer(link.policyId!, e.currentTarget)}
-                          className="text-left transition-colors duration-150 hover:text-[#F4F1EA] hover:underline hover:underline-offset-4"
-                        >
-                          {link.label}
-                        </button>
-                      ) : (
-                        <a
-                          href={link.href || '/'}
-                          onClick={(e) => {
-                            e.preventDefault();
-                            navigateTo(link.href || '/');
-                          }}
-                          className="transition-colors duration-150 hover:text-[#F4F1EA] hover:underline hover:underline-offset-4"
-                        >
-                          {link.label}
-                        </a>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ))}
+            {navigation.footerColumns.map((col) => {
+              // Filter out links whose required capability is disabled so unavailable features stay hidden in primary/footer nav
+              const visibleLinks = col.links.filter((link) => {
+                if (!link.requiresCapability) return true;
+                return Boolean(capabilities?.[link.requiresCapability]);
+              });
+
+              return (
+                <div key={col.id}>
+                  <h2 className="text-xs font-semibold tracking-[0.16em] text-[#F4F1EA] uppercase">
+                    {col.title}
+                  </h2>
+                  <ul className="mt-4 space-y-2.5 text-xs text-[#C8C0B4]">
+                    {visibleLinks.map((link) => (
+                      <li key={link.label}>
+                        {link.policyId ? (
+                          <button
+                            type="button"
+                            onClick={(e) => openPolicyDrawer(link.policyId!, e.currentTarget)}
+                            className="text-left transition-colors duration-150 hover:text-[#F4F1EA] hover:underline hover:underline-offset-4"
+                          >
+                            {link.label}
+                          </button>
+                        ) : (
+                          <a
+                            href={link.href || '/'}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              navigateTo(link.href || '/');
+                            }}
+                            className="transition-colors duration-150 hover:text-[#F4F1EA] hover:underline hover:underline-offset-4"
+                          >
+                            {link.label}
+                          </a>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              );
+            })}
           </div>
         </div>
 
@@ -99,11 +107,14 @@ export function Footer() {
               © {new Date().getFullYear()} {config.businessName} ({config.legalEntityName}).
             </p>
             <p className="text-[11px] text-[#C8C0B4]">
+              Runtime Mode: <strong className="uppercase text-[#F4F1EA]">{runtimeMode}</strong> ·
               Status: <strong className="text-[#F4F1EA]">Frontend prototype implemented</strong> ·{' '}
               <strong className="text-[#F4F1EA]">Live Kalp integration pending</strong>
             </p>
           </div>
-          <p className="mt-2 text-[11px] text-[#C8C0B4]/80">{config.demoModeNotice}</p>
+          {runtimeMode === 'demo' && (
+            <p className="mt-2 text-[11px] text-[#C8C0B4]/80">{config.demoModeNotice}</p>
+          )}
         </div>
       </div>
     </footer>

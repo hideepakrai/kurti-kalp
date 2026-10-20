@@ -1,22 +1,29 @@
 /**
- * Baseline Storefront Configuration for GAYRAA (Stage A Prototype).
+ * Baseline Storefront Configuration for GAYRAA.
  * Separates observed business attributes from configurable policy summaries.
- * Policy text reflects inspected gayraa.com/pages/shipping-policy and
- * gayraa.com/pages/refund-policy and must be reconfirmed before live publication.
  */
 
-import { StorefrontCapabilities, StorefrontConfig } from '../domain/content';
+import { StorefrontCapabilities, StorefrontConfig, StorefrontRuntimeMode } from '../domain/content';
 
-export const GAYRAA_CAPABILITIES: StorefrontCapabilities = {
-  stage: 'STAGE_A_MOCK_PROTOTYPE',
-  liveKalpConnected: false,
-  searchEnabled: true,
-  cartEnabled: true,
-  checkoutQuoteEnabled: true,
-  customerAccountsEnabled: false,
-  wishlistEnabled: false,
-  supportedHeroVariants: ['layered-typographic', 'split-editorial'],
-};
+export function buildStorefrontCapabilities(mode: StorefrontRuntimeMode): StorefrontCapabilities {
+  const isDemo = mode === 'demo';
+  const isConnected = mode === 'connected';
+  return {
+    stage: isConnected ? 'STAGE_B_CONNECTED' : 'STAGE_A_MOCK_PROTOTYPE',
+    mode,
+    liveKalpConnected: false, // Honest: Remains false until actual Kalp upstream responds
+    searchEnabled: mode !== 'unavailable',
+    cartEnabled: mode !== 'unavailable',
+    checkoutQuoteEnabled: mode !== 'unavailable',
+    orderLookupEnabled: isDemo, // Enabled in demo mode for order reference lookup; gated in connected until upstream ready
+    selfServeExchangeEnabled: isDemo, // Guided 3-day exchange request shell enabled in demo
+    customerAccountsEnabled: false, // No mandatory registration or heavy account dashboard
+    wishlistEnabled: false, // Hidden from primary header; /saved route shows explicit capability notice
+    supportedHeroVariants: ['layered-typographic', 'split-editorial'],
+  };
+}
+
+export const GAYRAA_CAPABILITIES: StorefrontCapabilities = buildStorefrontCapabilities('demo');
 
 export const GAYRAA_STOREFRONT_CONFIG: StorefrontConfig = {
   businessName: 'GAYRAA',
@@ -34,10 +41,10 @@ export const GAYRAA_STOREFRONT_CONFIG: StorefrontConfig = {
   announcementBar: {
     enabled: true,
     message: 'COMPLIMENTARY STANDARD SHIPPING ACROSS INDIA · DISPATCH WITHIN 48 HOURS FROM JAIPUR',
-    secondaryMessage: 'STAGE A PROTOTYPE (DEMO DATA)',
+    secondaryMessage: 'JAIPUR ATELIER',
   },
   demoModeNotice:
-    'Stage A Frontend Prototype — Catalog items, SKUs, prices, stock states, and studio illustrations are labelled demo fixtures. Live Kalp integration pending.',
+    'DEMO MODE — Catalog items, SKUs, prices, stock states, and studio illustrations are labelled demo fixtures (noindex). Live Kalp integration pending.',
   policies: {
     shipping: {
       id: 'shipping',
@@ -80,30 +87,30 @@ export const GAYRAA_STOREFRONT_CONFIG: StorefrontConfig = {
       id: 'privacy',
       title: 'Privacy & Data Boundaries',
       shortSummary:
-        'Customer contact and delivery details are used solely to quote shipping and fulfill orders. Stage A prototype stores session data in memory only.',
+        'Customer contact and delivery details are used solely to quote shipping and fulfill orders. Demo mode stores session data in memory only.',
       sourceUrl: 'https://www.gayraa.com/pages/privacy-policy',
       lastInspectedNote:
-        'Stage A prototype boundary summary. Reconfirm legal privacy text before production launch.',
+        'Storefront boundary summary. Reconfirm legal privacy text before production launch.',
       bulletPoints: [
-        'In Stage A demo mode, entered checkout details remain in temporary browser memory and no real customer record is persisted.',
-        'In Stage B connected mode, customer records, cart state, and order data are governed by Kalp Business Core tenant isolation.',
+        'In Demo Mode, entered checkout details remain in temporary memory and no real customer record is persisted.',
+        'In Connected Mode, browser requests communicate solely with same-origin /api/storefront/v1/* endpoints using cookie credentials.',
         'Raw payment credentials are never collected or stored by the storefront frontend.',
       ],
       importantNotice:
-        'Do not enter sensitive personal or real financial data while testing the Stage A prototype.',
+        'Do not enter sensitive personal or real financial data while testing in Demo Mode.',
     },
     terms: {
       id: 'terms',
-      title: 'Terms of Service & Demo Notice',
+      title: 'Terms of Service & Mode Notice',
       shortSummary:
-        'Governed by ROHIT SHARMA SHREE NARAYAN MANUFACTURER (Jaipur). This preview operates in Stage A Demo Mode.',
+        'Governed by ROHIT SHARMA SHREE NARAYAN MANUFACTURER (Jaipur). Explicit runtime modes prevent silent fallback to fake data.',
       sourceUrl: 'https://www.gayraa.com/pages/terms-of-service',
       lastInspectedNote:
         'Baseline summary from gayraa.com. Subject to merchant verification before live deployment.',
       bulletPoints: [
         'Legal Entity: ROHIT SHARMA SHREE NARAYAN MANUFACTURER, Plot No. 1–2, Jaipur Gate, Sanganer, Jaipur 302029.',
-        'All displayed products, prices, and inventory states in Stage A are labelled demo fixtures for UX and architectural verification.',
-        'Submitting checkout in Stage A generates a labelled demo order result and never captures real payment.',
+        'In Demo Mode, all displayed products, prices, and inventory states are labelled demo fixtures.',
+        'In Connected Mode, missing or unconfigured Kalp upstream services produce an explicit Unavailable state rather than falling back to demo data.',
       ],
       importantNotice:
         'Reproducing website policy summaries is for UX completeness and does not constitute legal advice or verified compliance.',

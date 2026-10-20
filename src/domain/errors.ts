@@ -1,10 +1,13 @@
 /**
  * Typed domain and connector error models.
- * Maps connector failures to clear, recoverable customer-facing messages.
+ * Maps connector and BFF failures to clear, recoverable customer-facing messages.
  */
 
 export type StorefrontErrorCode =
   | 'NETWORK_FAILURE'
+  | 'TIMEOUT_ERROR'
+  | 'REQUEST_ABORTED'
+  | 'UPSTREAM_UNAVAILABLE'
   | 'VALIDATION_ERROR'
   | 'NOT_FOUND'
   | 'UNAVAILABLE_VARIANT'
@@ -22,6 +25,7 @@ export interface FieldValidationIssue {
 export class StorefrontError extends Error {
   public readonly code: StorefrontErrorCode;
   public readonly recoverable: boolean;
+  public readonly statusCode?: number;
   public readonly fieldIssues?: FieldValidationIssue[];
   public readonly latestCartRevision?: string;
 
@@ -29,6 +33,7 @@ export class StorefrontError extends Error {
     code: StorefrontErrorCode;
     message: string;
     recoverable?: boolean;
+    statusCode?: number;
     fieldIssues?: FieldValidationIssue[];
     latestCartRevision?: string;
   }) {
@@ -36,6 +41,7 @@ export class StorefrontError extends Error {
     this.name = 'StorefrontError';
     this.code = options.code;
     this.recoverable = options.recoverable ?? true;
+    this.statusCode = options.statusCode;
     this.fieldIssues = options.fieldIssues;
     this.latestCartRevision = options.latestCartRevision;
   }

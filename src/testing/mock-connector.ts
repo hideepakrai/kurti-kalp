@@ -1,18 +1,12 @@
 /**
- * Replaceable Local Mock Connector (Stage A Prototype).
+ * Development & Test-Only Local Mock Connector.
  *
- * Implements the proposed StorefrontConnector interface against labelled demo fixtures.
- * Enforces:
- * - Minor-unit integer Money representation
- * - Product-specific option/variant resolution
- * - Cart revision tracking & conflict detection
- * - Server-authoritative CheckoutQuote with expiry & eligibility rules
- * - Idempotent createOrder (same key + same payload = original result; same key + changed payload = conflict)
- * - Strict separation of orderStatus and paymentStatus
+ * Located in src/testing/ so production builds never bundle mock fixtures or fake commerce state.
  */
 
 import { GAYRAA_NAVIGATION } from '../config/navigation';
-import { GAYRAA_CAPABILITIES, GAYRAA_STOREFRONT_CONFIG } from '../config/storefront';
+import { buildStorefrontCapabilities, GAYRAA_STOREFRONT_CONFIG } from '../config/storefront';
+import { ConnectorRequestOptions, StorefrontConnector } from '../connector/storefront-connector';
 import {
   AddCartItemInput,
   Cart,
@@ -50,7 +44,6 @@ import { FieldValidationIssue, StorefrontError } from '../domain/errors';
 import { createMoney } from '../domain/money';
 import { DEMO_COLLECTIONS, DEMO_PRODUCTS, toProductSummary } from './fixtures/catalog-fixtures';
 import { DEMO_HOMEPAGE_MANIFEST } from './fixtures/content-fixtures';
-import { StorefrontConnector } from './storefront-connector';
 
 interface InternalCartEntry {
   lineItemId: string;
@@ -84,13 +77,14 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
   ];
   private quotes = new Map<string, CheckoutQuote>();
   private idempotencyStore = new Map<string, StoredIdempotentOrder>();
+  private ordersByRef = new Map<string, OrderResult>();
   private orderCounter = 1040;
   private simOptions: Required<MockConnectorSimulationOptions>;
 
   constructor(options?: MockConnectorSimulationOptions) {
     this.simOptions = {
-      latencyMs: options?.latencyMs ?? 120,
-      quoteTtlMs: options?.quoteTtlMs ?? 5 * 60 * 1000, // 5 minutes default
+      latencyMs: options?.latencyMs ?? 80,
+      quoteTtlMs: options?.quoteTtlMs ?? 5 * 60 * 1000,
       forceNextError: options?.forceNextError ?? null,
       heroVariantOverride: options?.heroVariantOverride ?? null,
     };
@@ -116,13 +110,33 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
     return this.getCurrentRevision();
   }
 
+  public getOrderByReference(ref: string): OrderResult | null {
+    const normalized = ref.trim().toUpperCase();
+    const found = this.ordersByRef.get(normalized);
+    return found ? structuredClone(found) : null;
+  }
+
   private getCurrentRevision(): string {
     return `rev_${this.revisionCounter}`;
   }
 
-  private async delayAndCheckForcedError(): Promise<void> {
+  private async delayAndCheckForcedError(options?: ConnectorRequestOptions): Promise<void> {
+    if (options?.signal?.aborted) {
+      throw new StorefrontError({
+        code: 'REQUEST_ABORTED',
+        message: 'Request was cancelled.',
+        recoverable: true,
+      });
+    }
     if (this.simOptions.latencyMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, this.simOptions.latencyMs));
+    }
+    if (options?.signal?.aborted) {
+      throw new StorefrontError({
+        code: 'REQUEST_ABORTED',
+        message: 'Request was cancelled.',
+        recoverable: true,
+      });
     }
     if (this.simOptions.forceNextError === 'NETWORK_FAILURE') {
       this.simOptions.forceNextError = null;
@@ -134,23 +148,23 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
     }
   }
 
-  async getCapabilities(): Promise<StorefrontCapabilities> {
-    await this.delayAndCheckForcedError();
-    return structuredClone(GAYRAA_CAPABILITIES);
+  async getCapabilities(options?: ConnectorRequestOptions): Promise<StorefrontCapabilities> {
+    await this.delayAndCheckForcedError(options);
+    return structuredClone(buildStorefrontCapabilities('demo'));
   }
 
-  async getStorefrontConfig(): Promise<StorefrontConfig> {
-    await this.delayAndCheckForcedError();
+  async getStorefrontConfig(options?: ConnectorRequestOptions): Promise<StorefrontConfig> {
+    await this.delayAndCheckForcedError(options);
     return structuredClone(GAYRAA_STOREFRONT_CONFIG);
   }
 
-  async getNavigation(): Promise<Navigation> {
-    await this.delayAndCheckForcedError();
+  async getNavigation(options?: ConnectorRequestOptions): Promise<Navigation> {
+    await this.delayAndCheckForcedError(options);
     return structuredClone(GAYRAA_NAVIGATION);
   }
 
-  async getHomePage(): Promise<PageManifest> {
-    await this.delayAndCheckForcedError();
+  async getHomePage(options?: ConnectorRequestOptions): Promise<PageManifest> {
+    await this.delayAndCheckForcedError(options);
     const manifest = structuredClone(DEMO_HOMEPAGE_MANIFEST);
     if (this.simOptions.heroVariantOverride) {
       manifest.sections = manifest.sections.map((section) =>
@@ -162,19 +176,23 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
     return manifest;
   }
 
-  async getCollections(): Promise<CollectionMetadata[]> {
-    await this.delayAndCheckForcedError();
+  async getCollections(options?: ConnectorRequestOptions): Promise<CollectionMetadata[]> {
+    await this.delayAndCheckForcedError(options);
     return structuredClone(DEMO_COLLECTIONS);
   }
 
-  async getCollection(query: CollectionQuery): Promise<CollectionResult> {
-    await this.delayAndCheckForcedError();
+  async getCollection(
+    query: CollectionQuery,
+    options?: ConnectorRequestOptions
+  ): Promise<CollectionResult> {
+    await this.delayAndCheckForcedError(options);
     const collection = DEMO_COLLECTIONS.find((c) => c.slug === query.slug);
     if (!collection) {
       throw new StorefrontError({
         code: 'NOT_FOUND',
         message: `Collection "${query.slug}" was not found in the catalog.`,
         recoverable: true,
+        statusCode: 404,
       });
     }
 
@@ -201,8 +219,11 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
     });
   }
 
-  async searchProducts(query: SearchQuery): Promise<CollectionResult> {
-    await this.delayAndCheckForcedError();
+  async searchProducts(
+    query: SearchQuery,
+    options?: ConnectorRequestOptions
+  ): Promise<CollectionResult> {
+    await this.delayAndCheckForcedError(options);
     const normalizedQ = (query.q || '').trim().toLowerCase();
 
     const searchMetadata: CollectionMetadata = {
@@ -262,16 +283,22 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
 
     const activeSizes = params.sizes?.filter(Boolean) ?? [];
     const activeFabrics = params.fabrics?.filter(Boolean) ?? [];
-    const maxPriceMinor = params.maxPriceMinor;
+    const maxPriceMinor =
+      typeof params.maxPriceMinor === 'number' && Number.isFinite(params.maxPriceMinor) && params.maxPriceMinor > 0
+        ? params.maxPriceMinor
+        : undefined;
     const inStockOnly = Boolean(params.inStockOnly);
-    const sort: SortOption = params.sort ?? 'FEATURED';
+    const validSorts: SortOption[] = ['FEATURED', 'NEWEST', 'PRICE_ASC', 'PRICE_DESC'];
+    const sort: SortOption =
+      params.sort && validSorts.includes(params.sort) ? params.sort : 'FEATURED';
 
     let filtered = baseProducts.filter((product) => {
       if (activeSizes.length > 0) {
         const hasMatchingPurchasableSize = product.variants.some(
           (v) =>
-            activeSizes.includes(v.selectedOptions.Size || v.selectedOptions['Saree Length & Finish'] || '') &&
-            v.availability !== 'OUT_OF_STOCK'
+            activeSizes.includes(
+              v.selectedOptions.Size || v.selectedOptions['Saree Length & Finish'] || ''
+            ) && v.availability !== 'OUT_OF_STOCK'
         );
         if (!hasMatchingPurchasableSize) return false;
       }
@@ -300,10 +327,11 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
       return Number(b.isBestSeller) - Number(a.isBestSeller);
     });
 
-    const pageSize = params.pageSize ?? 6;
+    const pageSize = Math.max(1, Math.min(24, params.pageSize ?? 6));
     const totalCount = filtered.length;
     const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
-    const page = Math.min(Math.max(1, params.page ?? 1), totalPages);
+    const rawPage = Number.isFinite(params.page) ? Number(params.page) : 1;
+    const page = Math.min(Math.max(1, Math.floor(rawPage)), totalPages);
     const startIdx = (page - 1) * pageSize;
     const pagedSummaries: ProductSummary[] = filtered
       .slice(startIdx, startIdx + pageSize)
@@ -365,14 +393,15 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
     return { sizes, fabrics, priceRanges };
   }
 
-  async getProduct(query: ProductQuery): Promise<ProductDetail> {
-    await this.delayAndCheckForcedError();
+  async getProduct(query: ProductQuery, options?: ConnectorRequestOptions): Promise<ProductDetail> {
+    await this.delayAndCheckForcedError(options);
     const product = DEMO_PRODUCTS.find((p) => p.slug === query.slug || p.id === query.slug);
     if (!product) {
       throw new StorefrontError({
         code: 'NOT_FOUND',
         message: `Product "${query.slug}" could not be found in the demo catalog.`,
         recoverable: true,
+        statusCode: 404,
       });
     }
 
@@ -385,13 +414,13 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
     return clone;
   }
 
-  async getCart(): Promise<Cart> {
-    await this.delayAndCheckForcedError();
+  async getCart(options?: ConnectorRequestOptions): Promise<Cart> {
+    await this.delayAndCheckForcedError(options);
     return this.buildCartResponse();
   }
 
-  async addCartItem(input: AddCartItemInput): Promise<Cart> {
-    await this.delayAndCheckForcedError();
+  async addCartItem(input: AddCartItemInput, options?: ConnectorRequestOptions): Promise<Cart> {
+    await this.delayAndCheckForcedError(options);
     this.verifyCartRevision(input.expectedRevision);
 
     if (!Number.isInteger(input.quantity) || input.quantity < 1) {
@@ -460,8 +489,11 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
     return this.buildCartResponse();
   }
 
-  async updateCartItem(input: UpdateCartItemInput): Promise<Cart> {
-    await this.delayAndCheckForcedError();
+  async updateCartItem(
+    input: UpdateCartItemInput,
+    options?: ConnectorRequestOptions
+  ): Promise<Cart> {
+    await this.delayAndCheckForcedError(options);
     this.verifyCartRevision(input.expectedRevision);
 
     const index = this.cartEntries.findIndex((e) => e.lineItemId === input.lineItemId);
@@ -499,8 +531,11 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
     return this.buildCartResponse();
   }
 
-  async removeCartItem(input: RemoveCartItemInput): Promise<Cart> {
-    await this.delayAndCheckForcedError();
+  async removeCartItem(
+    input: RemoveCartItemInput,
+    options?: ConnectorRequestOptions
+  ): Promise<Cart> {
+    await this.delayAndCheckForcedError(options);
     this.verifyCartRevision(input.expectedRevision);
 
     this.cartEntries = this.cartEntries.filter((e) => e.lineItemId !== input.lineItemId);
@@ -544,7 +579,8 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
       if (!product || !variant) continue;
 
       const lineSubtotalMinor = variant.price.amountMinor * entry.quantity;
-      const lineCompareAtMinor = (variant.compareAtPrice?.amountMinor ?? variant.price.amountMinor) * entry.quantity;
+      const lineCompareAtMinor =
+        (variant.compareAtPrice?.amountMinor ?? variant.price.amountMinor) * entry.quantity;
 
       subtotalMinor += lineSubtotalMinor;
       compareAtTotalMinor += lineCompareAtMinor;
@@ -561,7 +597,9 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
         quantity: entry.quantity,
         maxAllowedQuantity: variant.availability === 'LOW_STOCK' ? 2 : 5,
         unitPrice: structuredClone(variant.price),
-        compareAtUnitPrice: variant.compareAtPrice ? structuredClone(variant.compareAtPrice) : undefined,
+        compareAtUnitPrice: variant.compareAtPrice
+          ? structuredClone(variant.compareAtPrice)
+          : undefined,
         lineSubtotal: createMoney(lineSubtotalMinor, 'INR', 2),
         image: structuredClone(product.primaryImage),
         availability: variant.availability,
@@ -582,7 +620,8 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
         subtotal: createMoney(compareAtTotalMinor, 'INR', 2),
         discountTotal: createMoney(savingsMinor, 'INR', 2),
         payableSubtotal: createMoney(subtotalMinor, 'INR', 2),
-        estimatedShippingNote: 'Free Standard Shipping across India (Dispatched within 48h from Jaipur)',
+        estimatedShippingNote:
+          'Free Standard Shipping across India (Dispatched within 48h from Jaipur)',
         taxIncludedNote: 'Inclusive of applicable GST · Final quote calculated at checkout',
       },
       adjustmentNotice,
@@ -590,8 +629,11 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
     };
   }
 
-  async getCheckoutQuote(input: CheckoutQuoteInput): Promise<CheckoutQuote> {
-    await this.delayAndCheckForcedError();
+  async getCheckoutQuote(
+    input: CheckoutQuoteInput,
+    options?: ConnectorRequestOptions
+  ): Promise<CheckoutQuote> {
+    await this.delayAndCheckForcedError(options);
 
     const currentCart = this.buildCartResponse();
     if (currentCart.items.length === 0) {
@@ -605,7 +647,8 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
     if (input.cartRevision !== currentCart.revision) {
       throw new StorefrontError({
         code: 'CART_CONFLICT',
-        message: 'Your shopping bag changed since checkout opened. Refreshing quote for the updated bag.',
+        message:
+          'Your shopping bag changed since checkout opened. Refreshing quote for the updated bag.',
         recoverable: true,
         latestCartRevision: currentCart.revision,
       });
@@ -614,7 +657,6 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
     const pin = (input.shippingAddress?.postalCode || '').trim();
     const isValidIndianPin = /^[1-9][0-9]{5}$/.test(pin);
 
-    // Connector-determined shipping options (never invent ₹250 express fee; express is inquiry-assisted per policy)
     const shippingMethods: ShippingMethodOption[] = [
       {
         id: 'ship-standard-free',
@@ -638,25 +680,25 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
     ];
 
     const selectedShippingMethodId =
-      input.shippingMethodId && shippingMethods.some((m) => m.id === input.shippingMethodId && m.eligible)
+      input.shippingMethodId &&
+      shippingMethods.some((m) => m.id === input.shippingMethodId && m.eligible)
         ? input.shippingMethodId
         : 'ship-standard-free';
 
     const payableSubtotalMinor = currentCart.totals.payableSubtotal.amountMinor;
-    // Included GST breakdown (12% apparel tax representation for quote transparency, already included in MRP/Selling price)
     const includedTaxMinor = Math.round((payableSubtotalMinor * 12) / 112);
 
-    // Connector-determined payment method eligibility:
-    // E.g. COD is only eligible when a valid 6-digit PIN is entered, order is <= ₹10,000, and PIN does not start with '9' (demo non-COD zone)
     const codEligibleByAmount = payableSubtotalMinor <= 1000000;
     const codEligibleByZone = !pin.startsWith('9');
     const codEligible = codEligibleByAmount && codEligibleByZone;
 
     let codIneligibleReason: string | undefined;
     if (!codEligibleByAmount) {
-      codIneligibleReason = 'Cash on Delivery is unavailable for orders above ₹10,000. Please use Prepaid Payment Intent.';
+      codIneligibleReason =
+        'Cash on Delivery is unavailable for orders above ₹10,000. Please use Prepaid Payment Intent.';
     } else if (!codEligibleByZone) {
-      codIneligibleReason = 'Cash on Delivery is not serviceable for PIN codes starting with 9 in demo rules.';
+      codIneligibleReason =
+        'Cash on Delivery is not serviceable for PIN codes starting with 9 in demo rules.';
     }
 
     const paymentMethods: PaymentMethodOption[] = [
@@ -710,8 +752,11 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
     return structuredClone(quote);
   }
 
-  async createOrder(input: CreateOrderInput): Promise<OrderResult> {
-    await this.delayAndCheckForcedError();
+  async createOrder(
+    input: CreateOrderInput,
+    options?: ConnectorRequestOptions
+  ): Promise<OrderResult> {
+    await this.delayAndCheckForcedError(options);
 
     if (!input.idempotencyKey || input.idempotencyKey.trim().length < 6) {
       throw new StorefrontError({
@@ -732,14 +777,11 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
       paymentMethodCode: input.paymentMethodCode,
     });
 
-    // 1. Check Idempotency Store first
     const existingIdempotentRecord = this.idempotencyStore.get(input.idempotencyKey);
     if (existingIdempotentRecord) {
       if (existingIdempotentRecord.payloadFingerprint === payloadFingerprint) {
-        // Same key + same payload => return original result deterministically
         return structuredClone(existingIdempotentRecord.result);
       }
-      // Same key + modified payload => throw IDEMPOTENCY_CONFLICT
       throw new StorefrontError({
         code: 'IDEMPOTENCY_CONFLICT',
         message:
@@ -748,7 +790,6 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
       });
     }
 
-    // 2. Validate Fields
     const fieldIssues = this.validateOrderInput(input);
     if (fieldIssues.length > 0) {
       throw new StorefrontError({
@@ -759,7 +800,6 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
       });
     }
 
-    // 3. Validate Cart Revision
     const currentRevision = this.getCurrentRevision();
     if (input.cartRevision !== currentRevision) {
       throw new StorefrontError({
@@ -771,7 +811,6 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
       });
     }
 
-    // 4. Validate Quote Existence & Expiration
     const quote = this.quotes.get(input.quoteId);
     if (
       !quote ||
@@ -789,7 +828,6 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
       });
     }
 
-    // 5. Validate Shipping & Payment Eligibility against Quote
     const shippingMethod = quote.shippingMethods.find((m) => m.id === input.shippingMethodId);
     if (!shippingMethod || !shippingMethod.eligible) {
       throw new StorefrontError({
@@ -803,12 +841,13 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
     if (!paymentMethod || !paymentMethod.eligible) {
       throw new StorefrontError({
         code: 'UNSUPPORTED_CAPABILITY',
-        message: paymentMethod?.ineligibilityReason || 'Selected payment method is not eligible for this quote.',
+        message:
+          paymentMethod?.ineligibilityReason ||
+          'Selected payment method is not eligible for this quote.',
         recoverable: true,
       });
     }
 
-    // 6. Revalidate Variant Availability at Checkout
     for (const item of quote.items) {
       const product = DEMO_PRODUCTS.find((p) => p.id === item.productId);
       const variant = product?.variants.find((v) => v.id === item.variantId);
@@ -824,14 +863,14 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
     this.orderCounter += 1;
     const orderNumber = this.orderCounter;
     const isPrepaid = input.paymentMethodCode === 'PREPAID_INTENT';
+    const orderReference = `GAY-DEMO-${orderNumber}`;
 
     const orderResult: OrderResult = {
       orderId: `demo_ord_${orderNumber}`,
-      orderReference: `GAY-DEMO-${orderNumber}`,
+      orderReference,
       createdAt: new Date().toISOString(),
       idempotencyKey: input.idempotencyKey,
       quoteId: quote.quoteId,
-      // Keep orderStatus strictly separate from paymentStatus
       orderStatus: isPrepaid ? 'CREATED_DEMO_HOLD' : 'PENDING_MERCHANT_VERIFICATION',
       paymentStatus: isPrepaid
         ? 'PENDING_PAYMENT_INTENT_HANDOFF'
@@ -866,8 +905,8 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
       payloadFingerprint,
       result: structuredClone(orderResult),
     });
+    this.ordersByRef.set(orderReference.toUpperCase(), structuredClone(orderResult));
 
-    // Clear cart items after successful demo order creation and advance revision
     this.cartEntries = [];
     this.revisionCounter += 1;
 
@@ -881,7 +920,10 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
       issues.push({ field: 'contact.fullName', message: 'Enter your full name.' });
     }
     if (!input.contact.email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.contact.email.trim())) {
-      issues.push({ field: 'contact.email', message: 'Enter a valid email address for order updates.' });
+      issues.push({
+        field: 'contact.email',
+        message: 'Enter a valid email address for order updates.',
+      });
     }
     const cleanPhone = (input.contact.phone || '').replace(/[\s\-+]/g, '');
     if (!/^(91)?[6-9][0-9]{9}$/.test(cleanPhone)) {
@@ -891,7 +933,10 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
       });
     }
 
-    if (!input.shippingAddress.recipientName || input.shippingAddress.recipientName.trim().length < 2) {
+    if (
+      !input.shippingAddress.recipientName ||
+      input.shippingAddress.recipientName.trim().length < 2
+    ) {
       issues.push({
         field: 'shippingAddress.recipientName',
         message: 'Enter the recipient name for delivery.',
@@ -912,7 +957,8 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
     if (!/^[1-9][0-9]{5}$/.test((input.shippingAddress.postalCode || '').trim())) {
       issues.push({
         field: 'shippingAddress.postalCode',
-        message: 'Enter a valid 6-digit Indian PIN code (note: format check does not guarantee courier serviceability).',
+        message:
+          'Enter a valid 6-digit Indian PIN code (note: format check does not guarantee courier serviceability).',
       });
     }
 

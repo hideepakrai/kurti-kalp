@@ -36,6 +36,7 @@ import { formatMoney } from '../domain/money';
 import { useStorefront } from '../integration/StorefrontProvider';
 import { navigateTo } from '../integration/hooks/useRouter';
 import { Breadcrumbs } from '../components/layout/Breadcrumbs';
+import { UnavailableModePanel } from '../components/layout/UnavailableModePanel';
 import { EmptyStatePanel, RecoverableErrorBanner } from '../components/ui/StateFeedback';
 import { StudioImage } from '../components/ui/StudioImage';
 
@@ -44,7 +45,8 @@ function generateIdempotencyKey(): string {
 }
 
 export function CheckoutPage() {
-  const { connector, cart, refreshCart, openPolicyDrawer } = useStorefront();
+  const { connector, cart, refreshCart, openPolicyDrawer, upstreamUnavailableReason } =
+    useStorefront();
 
   // Preserve customer form inputs across quote refreshes or recoverable errors
   const [contact, setContact] = useState<CustomerContact>({
@@ -420,6 +422,14 @@ export function CheckoutPage() {
           </div>
         </div>
       </div>
+    );
+  }
+
+  if (upstreamUnavailableReason || quoteError?.code === 'UPSTREAM_UNAVAILABLE') {
+    return (
+      <UnavailableModePanel
+        reason={quoteError?.message || upstreamUnavailableReason || undefined}
+      />
     );
   }
 
