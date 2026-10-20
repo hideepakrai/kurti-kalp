@@ -47,7 +47,10 @@ import {
   ExchangeEligibilityQuery,
   ExchangeEligibilityResult,
   ExchangeRequestResult,
-  GuestOrderLookupInput,
+  GuestOrderChallengeInput,
+  GuestOrderChallengeResult,
+  GuestOrderVerifyInput,
+  GuestOrderVerifyResult,
   ProductReviewsResult,
   SavedItemsResult,
   SubmitExchangeRequestInput,
@@ -69,6 +72,25 @@ interface InternalCartEntry {
 interface StoredIdempotentOrder {
   payloadFingerprint: string;
   result: OrderResult;
+}
+
+interface StoredIdempotentRecord<T> {
+  payloadFingerprint: string;
+  result: T;
+}
+
+interface StoredGuestChallenge {
+  challengeId: string;
+  orderReference: string;
+  email: string;
+  expectedCode: string;
+  expiresAtMs: number;
+}
+
+interface StoredGuestProof {
+  orderReference: string;
+  email: string;
+  expiresAtMs: number;
 }
 
 export interface MockConnectorSimulationOptions {
@@ -98,8 +120,11 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
   ];
   private quotes = new Map<string, CheckoutQuote>();
   private idempotencyStore = new Map<string, StoredIdempotentOrder>();
+  private mutationIdempotencyStore = new Map<string, StoredIdempotentRecord<unknown>>();
+  private guestChallenges = new Map<string, StoredGuestChallenge>();
+  private verifiedOrderProofs = new Map<string, StoredGuestProof>();
   private ordersByRef = new Map<string, OrderResult>();
-  private orderCounter = 1040;
+  private orderCounter = 1041;
   private simOptions: Required<MockConnectorSimulationOptions>;
 
   constructor(options?: MockConnectorSimulationOptions) {
@@ -1117,25 +1142,252 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
     return issues;
   }
 
-  async lookupOrder(
-    input: GuestOrderLookupInput,
+  private maskEmailAddress(email: string): string {
+    const [local, domain] = email.trim().split('@');
+    if (!local || !domain) return '***@***';
+    const prefix = local.slice(0, Math.min(2, local.length));
+    return `${prefix}***@${domain}`;
+  }
+
+  private assertMutationIdempotency<T>(
+    key: string | undefined,
+    scope: string,
+    payloadFingerprint: string
+  ): T | null {
+    if (!key || key.trim().length < 6) {
+      throw new StorefrontError({
+        code: 'VALIDATION_ERROR',
+        message: `A valid idempotencyKey is required for ${scope}.`,
+        recoverable: true,
+      });
+    }
+    const compositeKey = `${scope}:${key.trim()}`;
+    const existing = this.mutationIdempotencyStore.get(compositeKey);
+    if (!existing) return null;
+    if (existing.payloadFingerprint === payloadFingerprint) {
+      return structuredClone(existing.result as T);
+    }
+    throw new StorefrontError({
+      code: 'IDEMPOTENCY_CONFLICT',
+      message: `Idempotency conflict in ${scope}: key "${key}" was already used with a different request payload.`,
+      recoverable: true,
+      statusCode: 409,
+    });
+  }
+
+  private recordMutationIdempotency<T>(
+    key: string,
+    scope: string,
+    payloadFingerprint: string,
+    result: T
+  ): void {
+    const compositeKey = `${scope}:${key.trim()}`;
+    this.mutationIdempotencyStore.set(compositeKey, {
+      payloadFingerprint,
+      result: structuredClone(result),
+    });
+  }
+
+  private assertActiveOrderProof(orderReference: string): StoredGuestProof {
+    const normalizedRef = orderReference.trim().toUpperCase();
+    const proof = this.verifiedOrderProofs.get(normalizedRef);
+    if (!proof) {
+      // Check if the caller has a proof for a DIFFERENT order to provide clear proof-isolation feedback
+      if (this.verifiedOrderProofs.size > 0) {
+        throw new StorefrontError({
+          code: 'FORBIDDEN',
+          message: `Order access proof isolation error: Active verification proof does not grant access to order "${normalizedRef}". Please verify a challenge specifically for "${normalizedRef}".`,
+          recoverable: true,
+          statusCode: 403,
+        });
+      }
+      throw new StorefrontError({
+        code: 'UNAUTHORIZED',
+        message: `Guest order verification is required before accessing order "${normalizedRef}". Complete the email challenge and verification step first.`,
+        recoverable: true,
+        statusCode: 401,
+      });
+    }
+    if (Date.now() > proof.expiresAtMs) {
+      this.verifiedOrderProofs.delete(normalizedRef);
+      throw new StorefrontError({
+        code: 'SESSION_EXPIRED',
+        message: `Verification proof for order "${normalizedRef}" has expired. Please request a new verification code.`,
+        recoverable: true,
+        statusCode: 440,
+      });
+    }
+    return proof;
+  }
+
+  async createGuestOrderChallenge(
+    input: GuestOrderChallengeInput,
+    options?: ConnectorRequestOptions
+  ): Promise<GuestOrderChallengeResult> {
+    await this.delayAndCheckForcedError(options);
+    const idempotencyKey = input.idempotencyKey || `idem_chal_${Date.now()}`;
+    const ref = (input.orderReference || '').trim().toUpperCase();
+    const email = (input.email || '').trim().toLowerCase();
+    const fingerprint = JSON.stringify({ ref, email });
+
+    const cached = this.assertMutationIdempotency<GuestOrderChallengeResult>(
+      idempotencyKey,
+      'guestOrderChallenge',
+      fingerprint
+    );
+    if (cached) return cached;
+
+    const issues: FieldValidationIssue[] = [];
+    if (!ref) {
+      issues.push({
+        field: 'orderReference',
+        message: 'Order Reference is required (for example, GAY-DEMO-1041).',
+      });
+    }
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      issues.push({
+        field: 'email',
+        message: 'Enter the valid email address used when placing the order.',
+      });
+    }
+    if (issues.length > 0) {
+      throw new StorefrontError({
+        code: 'VALIDATION_ERROR',
+        message: 'Please provide both your Order Reference and order email address.',
+        recoverable: true,
+        statusCode: 422,
+        fieldIssues: issues,
+      });
+    }
+
+    const found = this.ordersByRef.get(ref);
+    if (!found || found.contact.email.trim().toLowerCase() !== email) {
+      throw new StorefrontError({
+        code: 'NOT_FOUND',
+        message: `No matching demo order found for reference "${ref}" and email "${email}". (For sample order GAY-DEMO-1041, use ananya.demo@example.com).`,
+        recoverable: true,
+        statusCode: 404,
+      });
+    }
+
+    const challengeId = `chal_demo_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+    const expiresAtMs = Date.now() + 5 * 60 * 1000;
+
+    this.guestChallenges.set(challengeId, {
+      challengeId,
+      orderReference: ref,
+      email,
+      expectedCode: '123456',
+      expiresAtMs,
+    });
+
+    const result: GuestOrderChallengeResult = {
+      challengeId,
+      orderReference: ref,
+      maskedEmail: this.maskEmailAddress(email),
+      expiresAt: new Date(expiresAtMs).toISOString(),
+      verificationStep: 'EMAIL_CODE_REQUIRED',
+      isDemoChallenge: true,
+    };
+
+    this.recordMutationIdempotency(idempotencyKey, 'guestOrderChallenge', fingerprint, result);
+    return structuredClone(result);
+  }
+
+  async verifyGuestOrderChallenge(
+    input: GuestOrderVerifyInput,
+    options?: ConnectorRequestOptions
+  ): Promise<GuestOrderVerifyResult> {
+    await this.delayAndCheckForcedError(options);
+    const idempotencyKey = input.idempotencyKey || `idem_ver_${Date.now()}`;
+    const ref = (input.orderReference || '').trim().toUpperCase();
+    const email = (input.email || '').trim().toLowerCase();
+    const code = (input.code || '').trim();
+    const fingerprint = JSON.stringify({
+      challengeId: input.challengeId,
+      ref,
+      email,
+      code,
+    });
+
+    const cached = this.assertMutationIdempotency<GuestOrderVerifyResult>(
+      idempotencyKey,
+      'guestOrderVerify',
+      fingerprint
+    );
+    if (cached) return cached;
+
+    const challenge = this.guestChallenges.get(input.challengeId);
+    if (!challenge || challenge.orderReference !== ref || challenge.email !== email) {
+      throw new StorefrontError({
+        code: 'UNAUTHORIZED',
+        message: 'Invalid or mismatched order verification challenge. Please start a new challenge.',
+        recoverable: true,
+        statusCode: 401,
+      });
+    }
+
+    if (Date.now() > challenge.expiresAtMs) {
+      this.guestChallenges.delete(input.challengeId);
+      throw new StorefrontError({
+        code: 'SESSION_EXPIRED',
+        message: 'Verification challenge has expired. Please request a fresh code.',
+        recoverable: true,
+        statusCode: 440,
+      });
+    }
+
+    if (code !== challenge.expectedCode) {
+      throw new StorefrontError({
+        code: 'UNAUTHORIZED',
+        message: 'Invalid verification code. (In Demo Mode, enter 123456).',
+        recoverable: true,
+        statusCode: 401,
+        fieldIssues: [{ field: 'code', message: 'Invalid verification code.' }],
+      });
+    }
+
+    const proofExpiresAtMs = Date.now() + 10 * 60 * 1000;
+    this.verifiedOrderProofs.set(ref, {
+      orderReference: ref,
+      email,
+      expiresAtMs: proofExpiresAtMs,
+    });
+
+    const result: GuestOrderVerifyResult = {
+      verified: true,
+      orderReference: ref,
+      proofExpiresAt: new Date(proofExpiresAtMs).toISOString(),
+      allowedScopes: ['ORDER_DETAIL', 'EXCHANGE_ELIGIBILITY', 'EXCHANGE_REQUEST'],
+      isDemoVerification: true,
+    };
+
+    this.recordMutationIdempotency(idempotencyKey, 'guestOrderVerify', fingerprint, result);
+    return structuredClone(result);
+  }
+
+  async getVerifiedGuestOrder(
+    orderReference: string,
     options?: ConnectorRequestOptions
   ): Promise<OrderResult> {
     await this.delayAndCheckForcedError(options);
-    const ref = (input.orderReference || '').trim().toUpperCase();
+    const ref = (orderReference || '').trim().toUpperCase();
     if (!ref) {
       throw new StorefrontError({
         code: 'VALIDATION_ERROR',
-        message: 'Enter a valid Order Reference (for example, GAY-DEMO-1041).',
+        message: 'Order Reference is required.',
         recoverable: true,
-        fieldIssues: [{ field: 'orderReference', message: 'Order Reference is required.' }],
+        statusCode: 400,
       });
     }
+
+    this.assertActiveOrderProof(ref);
+
     const found = this.ordersByRef.get(ref);
     if (!found) {
       throw new StorefrontError({
         code: 'NOT_FOUND',
-        message: `No demo order found for reference "${ref}". Place a demo order in Checkout or inspect GAY-DEMO-1041.`,
+        message: `Order "${ref}" was not found.`,
         recoverable: true,
         statusCode: 404,
       });
@@ -1148,6 +1400,23 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
     options?: ConnectorRequestOptions
   ): Promise<SupportInquiryResult> {
     await this.delayAndCheckForcedError(options);
+    const idempotencyKey = input.idempotencyKey;
+    const fingerprint = JSON.stringify({
+      fullName: input.fullName,
+      email: input.email,
+      phone: input.phone,
+      orderReference: input.orderReference,
+      topic: input.topic,
+      message: input.message,
+    });
+
+    const cached = this.assertMutationIdempotency<SupportInquiryResult>(
+      idempotencyKey,
+      'supportInquiry',
+      fingerprint
+    );
+    if (cached) return cached;
+
     const issues: FieldValidationIssue[] = [];
     if (!input.fullName || input.fullName.trim().length < 2) {
       issues.push({ field: 'fullName', message: 'Enter your full name.' });
@@ -1169,14 +1438,19 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
         fieldIssues: issues,
       });
     }
-    return {
+
+    const result: SupportInquiryResult = {
       inquiryReference: `INQ-DEMO-${Date.now().toString().slice(-5)}`,
+      idempotencyKey: idempotencyKey!,
       receivedAt: new Date().toISOString(),
       status: 'RECORDED_DEMO_ONLY',
       summaryMessage:
         'Demo Mode Notice: Inquiry formatted in local memory only. No live email or support ticket was sent. For real assistance, contact gayraabysnm@gmail.com or +91 7300006707.',
       isDemoRecord: true,
     };
+
+    this.recordMutationIdempotency(idempotencyKey!, 'supportInquiry', fingerprint, result);
+    return structuredClone(result);
   }
 
   async checkExchangeEligibility(
@@ -1192,6 +1466,10 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
         recoverable: true,
       });
     }
+
+    // Require active verified proof for the matching order reference
+    this.assertActiveOrderProof(ref);
+
     const found = this.ordersByRef.get(ref);
     if (!found) {
       throw new StorefrontError({
@@ -1221,8 +1499,28 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
     options?: ConnectorRequestOptions
   ): Promise<ExchangeRequestResult> {
     await this.delayAndCheckForcedError(options);
+    const idempotencyKey = input.idempotencyKey;
+    const ref = (input.orderReference || '').trim().toUpperCase();
+    const fingerprint = JSON.stringify({
+      orderReference: ref,
+      email: input.email.trim().toLowerCase(),
+      reason: input.reason,
+      replacementSize: input.replacementSize,
+      notes: input.notes,
+      confirmedWithin3Days: input.confirmedWithin3Days,
+      confirmedUnusedWithTags: input.confirmedUnusedWithTags,
+      confirmedCustomerReturnShipping: input.confirmedCustomerReturnShipping,
+    });
+
+    const cached = this.assertMutationIdempotency<ExchangeRequestResult>(
+      idempotencyKey,
+      'exchangeRequest',
+      fingerprint
+    );
+    if (cached) return cached;
+
     const issues: FieldValidationIssue[] = [];
-    if (!input.orderReference || input.orderReference.trim().length < 4) {
+    if (!ref || ref.length < 4) {
       issues.push({ field: 'orderReference', message: 'Enter your valid Order ID.' });
     }
     if (!input.email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.email.trim())) {
@@ -1249,9 +1547,20 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
       });
     }
 
-    return {
+    const proof = this.assertActiveOrderProof(ref);
+    if (proof.email !== input.email.trim().toLowerCase()) {
+      throw new StorefrontError({
+        code: 'FORBIDDEN',
+        message: 'The submitted email does not match the verified order email proof.',
+        recoverable: true,
+        statusCode: 403,
+      });
+    }
+
+    const result: ExchangeRequestResult = {
       exchangeReference: `EX-DEMO-${Date.now().toString().slice(-5)}`,
-      orderReference: input.orderReference.trim().toUpperCase(),
+      idempotencyKey: idempotencyKey!,
+      orderReference: ref,
       createdAt: new Date().toISOString(),
       status: 'PENDING_DEMO_REVIEW',
       reason: input.reason,
@@ -1262,6 +1571,9 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
       demoDisclaimer:
         'DEMO MODE NOTICE: No live exchange ticket or return shipment was created. In production, initiate within 3 days of delivery via gayraabysnm@gmail.com or +91 7300006707.',
     };
+
+    this.recordMutationIdempotency(idempotencyKey!, 'exchangeRequest', fingerprint, result);
+    return structuredClone(result);
   }
 
   async getCustomerSession(options?: ConnectorRequestOptions): Promise<CustomerSession> {
@@ -1289,11 +1601,9 @@ export class LocalMockStorefrontConnector implements StorefrontConnector {
     options?: ConnectorRequestOptions
   ): Promise<CustomerOrderSummary> {
     await this.delayAndCheckForcedError(options);
-    const found = this.ordersByRef.get(orderId.trim().toUpperCase());
-    if (found) return structuredClone(found);
     throw new StorefrontError({
       code: 'UNAUTHORIZED',
-      message: `Authenticated order detail for "${orderId}" requires an active Kalp customer session. Use /order-lookup for guest reference lookup.`,
+      message: `Authenticated order detail for "${orderId}" requires an active Kalp customer session. Use /order-lookup for verified guest order access.`,
       recoverable: true,
       statusCode: 401,
     });

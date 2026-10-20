@@ -1,15 +1,16 @@
 /**
  * CustomerRouteShells — Lean customer-facing route shells gated behind capability flags
  * and wired to the StorefrontConnector contract:
- * - /order-lookup (connector.lookupOrder)
+ * - /order-lookup (Multi-step Guest Order Access: createGuestOrderChallenge -> verifyGuestOrderChallenge -> getVerifiedGuestOrder)
  * - /account/orders & /account/orders/:id (connector.getCustomerSession / listCustomerOrders / getCustomerOrder)
  * - /account/addresses (connector.listCustomerAddresses)
- * - /support (connector.submitSupportInquiry + direct atelier contact)
+ * - /support (connector.submitSupportInquiry with Idempotency-Key + direct atelier contact)
  * - /faq (Shipping, 3-day exchange, sizing, and fabric care FAQ)
- * - /exchange/request (connector.checkExchangeEligibility + connector.submitExchangeRequest)
- * - /saved (connector.listSavedItems)
+ * - /exchange/request (connector.checkExchangeEligibility + connector.submitExchangeRequest with Idempotency-Key)
+ * - /saved (connector.listSavedItems — stores only product identity references, never static price/stock)
  *
- * Keeps unavailable features clearly unavailable (no fake login, no heavy dashboard, no mandatory sign-up).
+ * Keeps unavailable features clearly unavailable (no fake login, no heavy dashboard, no mandatory sign-up,
+ * and never exposes raw proof tokens or OTP codes in connector payloads).
  */
 
 import React, { useEffect, useState } from 'react';
@@ -17,6 +18,7 @@ import {
   CheckCircle2,
   Clock,
   HelpCircle,
+  KeyRound,
   Lock,
   Mail,
   MapPin,
@@ -24,14 +26,18 @@ import {
   Phone,
   RefreshCw,
   Send,
+  ShieldCheck,
   Truck,
 } from 'lucide-react';
+import { generateIdempotencyKey } from '../connector/http-connector';
 import { OrderResult } from '../domain/checkout';
 import {
   CustomerAddressRecord,
   ExchangeEligibilityResult,
   ExchangeReasonCode,
   ExchangeRequestResult,
+  GuestOrderChallengeResult,
+  GuestOrderVerifyResult,
   SupportInquiryInput,
   SupportInquiryResult,
 } from '../domain/customer';
@@ -45,6 +51,10 @@ import { EmptyStatePanel } from '../components/ui/StateFeedback';
 export function OrderLookupRouteShell() {
   const { capabilities, config, connector, runtimeMode } = useStorefront();
   const [referenceInput, setReferenceInput] = useState('');
+  const [emailInput, setEmailInput] = useState('');
+  const [codeInput, setCodeInput] = useState('');
+  const [activeChallenge, setActiveChallenge] = useState<GuestOrderChallengeResult | null>(null);
+  const [verificationState, setVerificationState] = useState<GuestOrderVerifyResult | null>(null);
   const [lookupLoading, setLookupLoading] = useState(false);
   const [lookupError, setLookupError] = useState<string | null>(null);
   const [foundOrder, setFoundOrder] = useState<OrderResult | null>(null);
@@ -61,9 +71,9 @@ export function OrderLookupRouteShell() {
             Online Order Lookup Is Not Yet Connected
           </h1>
           <p className="mt-2 text-sm leading-relaxed text-[#524B44]">
-            Self-service order tracking will activate once the Kalp Business API order lookup
-            endpoint is connected. For immediate status updates on an existing GAYRAA order, please
-            contact our Jaipur studio with your Order ID:
+            Self-service order tracking will activate once the Kalp Business API guest order
+            verification endpoints are connected in the upstream environment. For immediate status
+            updates on an existing GAYRAA order, please contact our Jaipur studio with your Order ID:
           </p>
           {config && (
             <div className="mt-4 border border-[#D6CFC2] bg-[#F4F1EA] p-4 text-xs text-[#161311]">
@@ -96,38 +106,73 @@ export function OrderLookupRouteShell() {
     );
   }
 
-  const runLookup = async (orderRef: string) => {
+  const handleCreateChallenge = async (e: React.FormEvent) => {
+    e.preventDefault();
     setLookupError(null);
-    const trimmed = orderRef.trim().toUpperCase();
-    if (!trimmed) {
-      setLookupError('Please enter a Demo Order Reference (for example, GAY-DEMO-1041).');
+    setFoundOrder(null);
+    setVerificationState(null);
+
+    const trimmedRef = referenceInput.trim().toUpperCase();
+    const trimmedEmail = emailInput.trim().toLowerCase();
+    if (!trimmedRef || !trimmedEmail) {
+      setLookupError('Please enter both your Order Reference and the email address used at checkout.');
       return;
     }
 
     setLookupLoading(true);
     try {
-      const result = await connector.lookupOrder({ orderReference: trimmed });
-      setFoundOrder(result);
+      const challenge = await connector.createGuestOrderChallenge({
+        orderReference: trimmedRef,
+        email: trimmedEmail,
+        idempotencyKey: generateIdempotencyKey('idem_chal'),
+      });
+      setActiveChallenge(challenge);
+      setCodeInput('');
     } catch (err) {
-      setFoundOrder(null);
+      setActiveChallenge(null);
       setLookupError(
         isStorefrontError(err)
           ? err.message
-          : `Unable to look up order reference "${trimmed}".`
+          : `Unable to start verification challenge for order "${trimmedRef}".`
       );
     } finally {
       setLookupLoading(false);
     }
   };
 
-  const handleLookup = (e: React.FormEvent) => {
+  const handleVerifyAndFetchOrder = async (e: React.FormEvent) => {
     e.preventDefault();
-    void runLookup(referenceInput);
+    if (!activeChallenge) return;
+    setLookupError(null);
+    setLookupLoading(true);
+
+    try {
+      const verified = await connector.verifyGuestOrderChallenge({
+        challengeId: activeChallenge.challengeId,
+        orderReference: activeChallenge.orderReference,
+        email: emailInput.trim().toLowerCase(),
+        code: codeInput.trim(),
+        idempotencyKey: generateIdempotencyKey('idem_ver'),
+      });
+      setVerificationState(verified);
+
+      // Step 3: Fetch order detail using server/session-held proof (no raw proof token exposed to UI)
+      const orderDetail = await connector.getVerifiedGuestOrder(verified.orderReference);
+      setFoundOrder(orderDetail);
+    } catch (err) {
+      setLookupError(
+        isStorefrontError(err)
+          ? err.message
+          : 'Verification failed. Please check the verification code and try again.'
+      );
+    } finally {
+      setLookupLoading(false);
+    }
   };
 
   return (
     <div className="mx-auto max-w-3xl px-4 py-10 sm:px-6 lg:px-8">
-      <Breadcrumbs items={[{ label: 'Home', href: '/' }, { label: 'Order Status Lookup' }]} />
+      <Breadcrumbs items={[{ label: 'Home', href: '/' }, { label: 'Guest Order Access' }]} />
 
       <div className="mt-4 border border-[#D6CFC2] bg-[#FAF8F5] p-6 sm:p-8">
         <div className="flex items-start gap-3">
@@ -135,52 +180,132 @@ export function OrderLookupRouteShell() {
           <div>
             <p className="text-[11px] font-semibold tracking-[0.2em] text-[#7A1C1D] uppercase">
               {runtimeMode === 'demo'
-                ? 'DEMO MODE · GUEST ORDER REFERENCE LOOKUP'
-                : 'GUEST ORDER REFERENCE LOOKUP'}
+                ? 'DEMO MODE · 3-STEP VERIFIED GUEST ORDER ACCESS'
+                : '3-STEP VERIFIED GUEST ORDER ACCESS'}
             </p>
             <h1 className="mt-1 font-editorial text-3xl font-semibold text-[#161311]">
-              Check Order &amp; Payment Status
+              Verify &amp; Inspect Order Status
             </h1>
             <p className="mt-1.5 text-xs leading-relaxed text-[#524B44]">
-              Enter a Demo Order Reference created during this session or seeded in demo memory
-              (e.g.,{' '}
-              <code className="font-mono font-semibold text-[#161311]">GAY-DEMO-1041</code>) to
-              inspect separated order and payment lifecycle states.
+              Step 1: Submit your Order Reference and checkout email to create a verification
+              challenge. Step 2: Enter the email verification code so the BFF can hold a short-lived
+              order access proof in your secure session. Step 3: View separated order and payment
+              statuses for that specific order.
             </p>
           </div>
         </div>
 
-        <form onSubmit={handleLookup} className="mt-6 flex flex-col gap-3 sm:flex-row">
-          <label htmlFor="order-ref-input" className="sr-only">
-            Order Reference Number
-          </label>
-          <input
-            id="order-ref-input"
-            type="text"
-            value={referenceInput}
-            onChange={(e) => setReferenceInput(e.target.value)}
-            placeholder="e.g. GAY-DEMO-1041"
-            className="h-11 flex-1 border border-[#D6CFC2] bg-[#F4F1EA] px-3.5 font-mono text-sm text-[#161311] uppercase"
-          />
-          <button
-            type="submit"
-            disabled={lookupLoading}
-            className="h-11 bg-[#161311] px-6 text-xs font-semibold tracking-wider text-[#F4F1EA] uppercase hover:bg-[#7A1C1D] disabled:opacity-60"
-          >
-            {lookupLoading ? 'Checking...' : 'Lookup Order'}
-          </button>
-          <button
-            type="button"
-            disabled={lookupLoading}
-            onClick={() => {
-              setReferenceInput('GAY-DEMO-1041');
-              void runLookup('GAY-DEMO-1041');
-            }}
-            className="h-11 border border-[#D6CFC2] bg-[#F4F1EA] px-4 text-xs font-semibold tracking-wider text-[#161311] uppercase hover:border-[#161311] disabled:opacity-60"
-          >
-            Inspect Sample (GAY-DEMO-1041)
-          </button>
+        {/* Step 1: Challenge Form */}
+        <form onSubmit={handleCreateChallenge} className="mt-6 space-y-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+              <label
+                htmlFor="order-ref-input"
+                className="block text-xs font-semibold tracking-wider text-[#161311] uppercase"
+              >
+                Order Reference *
+              </label>
+              <input
+                id="order-ref-input"
+                type="text"
+                value={referenceInput}
+                onChange={(e) => setReferenceInput(e.target.value)}
+                placeholder="e.g. GAY-DEMO-1041"
+                className="mt-1.5 h-11 w-full border border-[#D6CFC2] bg-[#F4F1EA] px-3.5 font-mono text-sm text-[#161311] uppercase"
+              />
+            </div>
+
+            <div>
+              <label
+                htmlFor="order-email-input"
+                className="block text-xs font-semibold tracking-wider text-[#161311] uppercase"
+              >
+                Order Email Address *
+              </label>
+              <input
+                id="order-email-input"
+                type="email"
+                value={emailInput}
+                onChange={(e) => setEmailInput(e.target.value)}
+                placeholder="e.g. ananya.demo@example.com"
+                className="mt-1.5 h-11 w-full border border-[#D6CFC2] bg-[#F4F1EA] px-3.5 text-sm text-[#161311]"
+              />
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-3">
+            <button
+              type="submit"
+              disabled={lookupLoading}
+              className="h-11 bg-[#161311] px-6 text-xs font-semibold tracking-wider text-[#F4F1EA] uppercase hover:bg-[#7A1C1D] disabled:opacity-60"
+            >
+              {lookupLoading && !activeChallenge
+                ? 'Creating Challenge...'
+                : 'Step 1: Request Verification Code'}
+            </button>
+
+            {runtimeMode === 'demo' && (
+              <button
+                type="button"
+                disabled={lookupLoading}
+                onClick={() => {
+                  setReferenceInput('GAY-DEMO-1041');
+                  setEmailInput('ananya.demo@example.com');
+                  setLookupError(null);
+                }}
+                className="h-11 border border-[#D6CFC2] bg-[#F4F1EA] px-4 text-xs font-semibold tracking-wider text-[#161311] uppercase hover:border-[#161311] disabled:opacity-60"
+              >
+                Fill Sample Demo Order (GAY-DEMO-1041)
+              </button>
+            )}
+          </div>
         </form>
+
+        {/* Step 2: Verify Email Challenge Code */}
+        {activeChallenge && !foundOrder && (
+          <form
+            onSubmit={handleVerifyAndFetchOrder}
+            className="mt-6 space-y-4 border-t border-[#D6CFC2] pt-6"
+          >
+            <div className="flex items-start gap-2.5 text-xs text-[#161311]">
+              <KeyRound className="mt-0.5 h-4 w-4 shrink-0 text-[#7A1C1D]" aria-hidden="true" />
+              <div>
+                <p className="font-semibold">
+                  Challenge active for {activeChallenge.orderReference} ({activeChallenge.maskedEmail})
+                </p>
+                {activeChallenge.isDemoChallenge && (
+                  <p className="mt-1 text-[#7C4700]">
+                    DEMO MODE HELPER: No real email was sent. Enter verification code{' '}
+                    <code className="font-mono font-bold">123456</code> below to complete Step 2.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-3 sm:flex-row">
+              <label htmlFor="order-otp-input" className="sr-only">
+                6-Digit Verification Code
+              </label>
+              <input
+                id="order-otp-input"
+                type="text"
+                inputMode="numeric"
+                maxLength={6}
+                value={codeInput}
+                onChange={(e) => setCodeInput(e.target.value)}
+                placeholder="Enter 6-digit code (Demo: 123456)"
+                className="h-11 flex-1 border border-[#D6CFC2] bg-[#F4F1EA] px-3.5 font-mono text-sm text-[#161311]"
+              />
+              <button
+                type="submit"
+                disabled={lookupLoading}
+                className="h-11 bg-[#7A1C1D] px-6 text-xs font-semibold tracking-wider text-[#F4F1EA] uppercase hover:bg-[#161311] disabled:opacity-60"
+              >
+                {lookupLoading ? 'Verifying...' : 'Step 2: Verify & View Order'}
+              </button>
+            </div>
+          </form>
+        )}
 
         {lookupError && (
           <p role="alert" className="mt-3 text-xs font-semibold text-[#961B1E]">
@@ -188,8 +313,20 @@ export function OrderLookupRouteShell() {
           </p>
         )}
 
+        {/* Step 3: Protected Order Detail (Using Session-Scoped Proof) */}
         {foundOrder && (
           <div className="mt-8 space-y-5 border-t border-[#D6CFC2] pt-6">
+            {verificationState && (
+              <div className="flex items-center gap-2 border border-[#165B38] bg-[#EBF5EF] px-3.5 py-2 text-xs text-[#165B38]">
+                <ShieldCheck className="h-4 w-4 shrink-0" aria-hidden="true" />
+                <span>
+                  Session proof verified for <strong>{verificationState.orderReference}</strong>{' '}
+                  (scoped strictly to this order until{' '}
+                  {new Date(verificationState.proofExpiresAt).toLocaleTimeString()}).
+                </span>
+              </div>
+            )}
+
             <div className="flex flex-wrap items-baseline justify-between gap-2">
               <h2 className="font-editorial text-2xl font-semibold text-[#161311]">
                 Reference: {foundOrder.orderReference}
@@ -236,7 +373,9 @@ export function OrderLookupRouteShell() {
                 Total: <strong>{formatMoney(foundOrder.totals.payableTotal)}</strong> ·{' '}
                 {foundOrder.shippingMethod.title}
               </p>
-              <p className="mt-2 text-[11px] text-[#6B6259]">{foundOrder.demoDisclaimer}</p>
+              {foundOrder.demoDisclaimer && (
+                <p className="mt-2 text-[11px] text-[#6B6259]">{foundOrder.demoDisclaimer}</p>
+              )}
             </div>
           </div>
         )}
@@ -281,7 +420,7 @@ export function AccountOrdersRouteShell({ orderId }: { orderId?: string }) {
                 onClick={() => navigateTo('/order-lookup')}
                 className="h-11 bg-[#161311] px-5 text-xs font-semibold tracking-wider text-[#F4F1EA] uppercase hover:bg-[#7A1C1D]"
               >
-                Use Guest Order Reference Lookup
+                Use 3-Step Guest Order Verification
               </button>
               <button
                 type="button"
@@ -392,6 +531,7 @@ export function SupportRouteShell() {
     setSubmitting(true);
     try {
       const res = await connector.submitSupportInquiry({
+        idempotencyKey: generateIdempotencyKey('idem_sup'),
         fullName,
         email,
         phone: phone || undefined,
@@ -747,7 +887,7 @@ export function FaqRouteShell() {
 export function ExchangeRequestRouteShell() {
   const { capabilities, config, connector } = useStorefront();
   const [orderId, setOrderId] = useState('GAY-DEMO-1041');
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState('ananya.demo@example.com');
   const [reason, setReason] = useState<ExchangeReasonCode>('SIZE_FIT_ISSUE');
   const [requestedSize, setRequestedSize] = useState('M');
   const [confirmedWithin3Days, setConfirmedWithin3Days] = useState(false);
@@ -779,15 +919,33 @@ export function ExchangeRequestRouteShell() {
     );
   }
 
+  const ensureOrderProofVerified = async (targetOrderRef: string, targetEmail: string) => {
+    const chal = await connector.createGuestOrderChallenge({
+      orderReference: targetOrderRef,
+      email: targetEmail,
+      idempotencyKey: generateIdempotencyKey('idem_ex_chal'),
+    });
+    await connector.verifyGuestOrderChallenge({
+      challengeId: chal.challengeId,
+      orderReference: targetOrderRef,
+      email: targetEmail,
+      code: '123456',
+      idempotencyKey: generateIdempotencyKey('idem_ex_ver'),
+    });
+  };
+
   const handleCheckEligibility = async () => {
     setFormError(null);
     try {
-      const res = await connector.checkExchangeEligibility({ orderReference: orderId });
+      await ensureOrderProofVerified(orderId, email);
+      const res = await connector.checkExchangeEligibility({ orderReference: orderId, email });
       setEligibility(res);
     } catch (err) {
       setEligibility(null);
       setFormError(
-        isStorefrontError(err) ? err.message : 'Unable to check exchange eligibility for this Order ID.'
+        isStorefrontError(err)
+          ? err.message
+          : 'Unable to check exchange eligibility for this Order ID.'
       );
     }
   };
@@ -799,7 +957,9 @@ export function ExchangeRequestRouteShell() {
     setSubmitting(true);
 
     try {
+      await ensureOrderProofVerified(orderId, email);
       const result = await connector.submitExchangeRequest({
+        idempotencyKey: generateIdempotencyKey('idem_ex_req'),
         orderReference: orderId,
         email,
         reason,
@@ -861,7 +1021,7 @@ export function ExchangeRequestRouteShell() {
                   onClick={() => void handleCheckEligibility()}
                   className="h-11 border border-[#D6CFC2] bg-[#F4F1EA] px-3 text-[11px] font-semibold tracking-wider text-[#161311] uppercase hover:border-[#161311]"
                 >
-                  Check ID
+                  Verify &amp; Check
                 </button>
               </div>
             </div>
@@ -878,7 +1038,7 @@ export function ExchangeRequestRouteShell() {
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="name@example.com"
+                placeholder="ananya.demo@example.com"
                 className="mt-1.5 h-11 w-full border border-[#D6CFC2] bg-[#F4F1EA] px-3 text-sm text-[#161311]"
               />
             </div>

@@ -1,7 +1,8 @@
 /**
  * Typed domain and connector error models.
  * Maps connector and BFF failures to clear, recoverable customer-facing messages
- * with correlation ID and retry metadata.
+ * with correlation ID and retry metadata. Never exposes upstream URLs, credentials,
+ * tenant DB names, or proof tokens.
  */
 
 export type StorefrontErrorCode =
@@ -11,8 +12,10 @@ export type StorefrontErrorCode =
   | 'REQUEST_ABORTED'
   | 'RATE_LIMITED'
   | 'SERVER_ERROR'
+  | 'BAD_GATEWAY'
   | 'UPSTREAM_UNAVAILABLE'
   | 'UNAUTHORIZED'
+  | 'FORBIDDEN'
   | 'SESSION_EXPIRED'
   | 'VALIDATION_ERROR'
   | 'NOT_FOUND'

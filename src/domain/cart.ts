@@ -1,6 +1,6 @@
 /**
  * Framework-independent Cart domain contracts.
- * Supports expected revision validation and conflict explanation.
+ * Supports expected revision validation, conflict explanation, and idempotency keys on mutations.
  */
 
 import { AvailabilityStatus, MediaAsset } from './catalog';
@@ -49,15 +49,18 @@ export interface AddCartItemInput {
   variantId: string;
   quantity: number;
   expectedRevision?: string;
+  idempotencyKey?: string;
 }
 
 export interface UpdateCartItemInput {
   lineItemId: string;
   quantity: number;
   expectedRevision?: string;
+  idempotencyKey?: string;
 }
 
 export interface RemoveCartItemInput {
   lineItemId: string;
   expectedRevision?: string;
+  idempotencyKey?: string;
 }

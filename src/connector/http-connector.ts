@@ -3,12 +3,13 @@
  *
  * Rules Enforced:
  * - Calls ONLY same-origin `/api/storefront/v1/*` endpoints (rejects external origins).
- * - Sends `credentials: 'include'` (HttpOnly session cookies; zero bearer tokens or secrets in browser).
+ * - Sends `credentials: 'include'` (HttpOnly session cookies; zero bearer tokens, proof tokens, or secrets in browser).
  * - Sends and tracks `X-Correlation-Id` on every request.
- * - Deduplicates concurrent in-flight idempotent GET requests so duplicate calls never hit the BFF.
+ * - Context-aware GET deduplication: deduplicates concurrent in-flight idempotent GET requests ONLY when
+ *   they share the same URL AND request context (`correlationId`, `timeoutMs`, and no custom `AbortSignal`).
  * - Safe retry ONLY for idempotent GET reads on transient network/timeout/429/502/504 errors.
- * - Implements request timeouts, external AbortSignal support, typed response validation,
- *   and normalized `StorefrontError` mapping.
+ * - Never automatically retries POST, PATCH, PUT, or DELETE mutations.
+ * - Every implemented mutation sends an `Idempotency-Key` header.
  * - Never falls back to demo fixtures on failure or 503 UPSTREAM_UNAVAILABLE.
  */
 
@@ -45,7 +46,10 @@ import {
   ExchangeEligibilityQuery,
   ExchangeEligibilityResult,
   ExchangeRequestResult,
-  GuestOrderLookupInput,
+  GuestOrderChallengeInput,
+  GuestOrderChallengeResult,
+  GuestOrderVerifyInput,
+  GuestOrderVerifyResult,
   ProductReviewsResult,
   SavedItemsResult,
   SubmitExchangeRequestInput,
@@ -82,6 +86,10 @@ interface BffErrorEnvelope {
 
 function generateCorrelationId(): string {
   return `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
+export function generateIdempotencyKey(prefix = 'idem'): string {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function buildCatalogQueryString(
@@ -131,8 +139,19 @@ export class HttpStorefrontConnector implements StorefrontConnector {
       err.code === 'NETWORK_FAILURE' ||
       err.code === 'TIMEOUT_ERROR' ||
       err.code === 'RATE_LIMITED' ||
+      err.code === 'BAD_GATEWAY' ||
       err.code === 'SERVER_ERROR'
     );
+  }
+
+  private buildGetDeduplicationKey(url: string, options?: ConnectorRequestOptions): string | null {
+    // Never merge requests that have an external AbortSignal or distinct caller correlation IDs
+    if (options?.signal) {
+      return null;
+    }
+    const correlationContext = options?.correlationId ? `cid:${options.correlationId}` : 'cid:auto';
+    const timeoutContext = `t:${options?.timeoutMs ?? this.defaultTimeoutMs}`;
+    return `GET|${url}|${correlationContext}|${timeoutContext}`;
   }
 
   private async requestJson<T>(
@@ -149,19 +168,22 @@ export class HttpStorefrontConnector implements StorefrontConnector {
     const isIdempotentRead = method === 'GET';
     const url = `${this.basePath}${path}`;
 
-    // Deduplicate concurrent identical GET requests when no caller-specific AbortSignal is attached
-    if (isIdempotentRead && !options?.signal) {
-      const existing = this.inFlightGetRequests.get(url);
-      if (existing) {
-        return (await existing) as T;
-      }
-      const promise = this.executeWithSafeRetry<T>(url, method, init, options, validator).finally(
-        () => {
-          this.inFlightGetRequests.delete(url);
+    // Context-aware deduplication for identical concurrent GET requests
+    if (isIdempotentRead) {
+      const dedupKey = this.buildGetDeduplicationKey(url, options);
+      if (dedupKey) {
+        const existing = this.inFlightGetRequests.get(dedupKey);
+        if (existing) {
+          return (await existing) as T;
         }
-      );
-      this.inFlightGetRequests.set(url, promise);
-      return promise;
+        const promise = this.executeWithSafeRetry<T>(url, method, init, options, validator).finally(
+          () => {
+            this.inFlightGetRequests.delete(dedupKey);
+          }
+        );
+        this.inFlightGetRequests.set(dedupKey, promise);
+        return promise;
+      }
     }
 
     return this.executeWithSafeRetry<T>(url, method, init, options, validator);
@@ -174,6 +196,7 @@ export class HttpStorefrontConnector implements StorefrontConnector {
     options?: ConnectorRequestOptions,
     validator?: (data: unknown) => T
   ): Promise<T> {
+    // Never automatically retry POST, PATCH, PUT, or DELETE mutations
     const isIdempotentRead = method === 'GET';
     const allowedRetries = isIdempotentRead ? this.maxReadRetries : 0;
     let attempt = 0;
@@ -184,6 +207,7 @@ export class HttpStorefrontConnector implements StorefrontConnector {
       } catch (err) {
         const sfErr = err instanceof StorefrontError ? err : null;
         if (
+          isIdempotentRead &&
           attempt < allowedRetries &&
           sfErr &&
           this.isTransientReadError(sfErr) &&
@@ -276,7 +300,7 @@ export class HttpStorefrontConnector implements StorefrontConnector {
 
       if (payload === null || typeof payload !== 'object') {
         throw new StorefrontError({
-          code: 'SERVER_ERROR',
+          code: 'BAD_GATEWAY',
           message: 'Received malformed non-JSON response from storefront BFF.',
           statusCode: response.status,
           correlationId: responseCorrelationId,
@@ -334,21 +358,25 @@ export class HttpStorefrontConnector implements StorefrontConnector {
     const fallbackCode: StorefrontErrorCode =
       status === 401
         ? 'UNAUTHORIZED'
-        : status === 440
-          ? 'SESSION_EXPIRED'
-          : status === 404
-            ? 'NOT_FOUND'
-            : status === 409
-              ? 'CART_CONFLICT'
-              : status === 429
-                ? 'RATE_LIMITED'
-                : status === 422 || status === 400
-                  ? 'VALIDATION_ERROR'
-                  : status === 503
-                    ? 'UPSTREAM_UNAVAILABLE'
-                    : status >= 500
-                      ? 'SERVER_ERROR'
-                      : 'NETWORK_FAILURE';
+        : status === 403
+          ? 'FORBIDDEN'
+          : status === 440
+            ? 'SESSION_EXPIRED'
+            : status === 404
+              ? 'NOT_FOUND'
+              : status === 409
+                ? 'CART_CONFLICT'
+                : status === 429
+                  ? 'RATE_LIMITED'
+                  : status === 422 || status === 400
+                    ? 'VALIDATION_ERROR'
+                    : status === 502
+                      ? 'BAD_GATEWAY'
+                      : status === 503
+                        ? 'UPSTREAM_UNAVAILABLE'
+                        : status >= 500
+                          ? 'SERVER_ERROR'
+                          : 'NETWORK_FAILURE';
 
     return new StorefrontError({
       code: errObj?.code ?? fallbackCode,
@@ -356,13 +384,17 @@ export class HttpStorefrontConnector implements StorefrontConnector {
         errObj?.message ??
         (status === 503
           ? 'Storefront backend is currently unavailable or awaiting Kalp Business Core configuration.'
-          : status === 429
-            ? 'Too many requests. Please wait a moment and try again.'
-            : status === 401
-              ? 'Customer authentication is required to access this resource.'
-              : status === 440
-                ? 'Your customer session has expired. Please sign in again.'
-                : `Storefront API returned HTTP ${status}.`),
+          : status === 502
+            ? 'Upstream service returned an invalid response.'
+            : status === 429
+              ? 'Too many requests. Please wait a moment and try again.'
+              : status === 401
+                ? 'Verification or authentication is required to access this resource.'
+                : status === 403
+                  ? 'Access to this resource is not permitted with the current verification scope.'
+                  : status === 440
+                    ? 'Your session or verification proof has expired.'
+                    : `Storefront API returned HTTP ${status}.`),
       recoverable: errObj?.recoverable ?? true,
       statusCode: status,
       correlationId: errObj?.correlationId ?? correlationId,
@@ -480,11 +512,15 @@ export class HttpStorefrontConnector implements StorefrontConnector {
   }
 
   async addCartItem(input: AddCartItemInput, options?: ConnectorRequestOptions): Promise<Cart> {
+    const idempotencyKey = input.idempotencyKey || generateIdempotencyKey('idem_cart_add');
     return this.requestJson(
       '/cart/items',
       {
         method: 'POST',
-        body: JSON.stringify(input),
+        headers: {
+          'Idempotency-Key': idempotencyKey,
+        },
+        body: JSON.stringify({ ...input, idempotencyKey }),
       },
       options,
       (data) => this.assertObject<Cart>(data, 'Cart')
@@ -495,13 +531,18 @@ export class HttpStorefrontConnector implements StorefrontConnector {
     input: UpdateCartItemInput,
     options?: ConnectorRequestOptions
   ): Promise<Cart> {
+    const idempotencyKey = input.idempotencyKey || generateIdempotencyKey('idem_cart_upd');
     return this.requestJson(
       `/cart/items/${encodeURIComponent(input.lineItemId)}`,
       {
         method: 'PATCH',
+        headers: {
+          'Idempotency-Key': idempotencyKey,
+        },
         body: JSON.stringify({
           quantity: input.quantity,
           expectedRevision: input.expectedRevision,
+          idempotencyKey,
         }),
       },
       options,
@@ -513,12 +554,18 @@ export class HttpStorefrontConnector implements StorefrontConnector {
     input: RemoveCartItemInput,
     options?: ConnectorRequestOptions
   ): Promise<Cart> {
+    const idempotencyKey = input.idempotencyKey || generateIdempotencyKey('idem_cart_rem');
     const qs = input.expectedRevision
       ? `?expectedRevision=${encodeURIComponent(input.expectedRevision)}`
       : '';
     return this.requestJson(
       `/cart/items/${encodeURIComponent(input.lineItemId)}${qs}`,
-      { method: 'DELETE' },
+      {
+        method: 'DELETE',
+        headers: {
+          'Idempotency-Key': idempotencyKey,
+        },
+      },
       options,
       (data) => this.assertObject<Cart>(data, 'Cart')
     );
@@ -528,11 +575,15 @@ export class HttpStorefrontConnector implements StorefrontConnector {
     input: CheckoutQuoteInput,
     options?: ConnectorRequestOptions
   ): Promise<CheckoutQuote> {
+    const idempotencyKey = input.idempotencyKey || generateIdempotencyKey('idem_quote');
     return this.requestJson(
       '/checkout/quote',
       {
         method: 'POST',
-        body: JSON.stringify(input),
+        headers: {
+          'Idempotency-Key': idempotencyKey,
+        },
+        body: JSON.stringify({ ...input, idempotencyKey }),
       },
       options,
       (data) => {
@@ -547,6 +598,13 @@ export class HttpStorefrontConnector implements StorefrontConnector {
     input: CreateOrderInput,
     options?: ConnectorRequestOptions
   ): Promise<OrderResult> {
+    if (!input.idempotencyKey || input.idempotencyKey.trim().length < 6) {
+      throw new StorefrontError({
+        code: 'VALIDATION_ERROR',
+        message: 'A valid idempotencyKey is required for order submission.',
+        recoverable: true,
+      });
+    }
     return this.requestJson(
       '/orders',
       {
@@ -565,18 +623,67 @@ export class HttpStorefrontConnector implements StorefrontConnector {
     );
   }
 
-  async lookupOrder(
-    input: GuestOrderLookupInput,
+  async createGuestOrderChallenge(
+    input: GuestOrderChallengeInput,
+    options?: ConnectorRequestOptions
+  ): Promise<GuestOrderChallengeResult> {
+    const idempotencyKey = input.idempotencyKey || generateIdempotencyKey('idem_ord_chal');
+    return this.requestJson(
+      '/orders/lookup/challenge',
+      {
+        method: 'POST',
+        headers: {
+          'Idempotency-Key': idempotencyKey,
+        },
+        body: JSON.stringify({
+          orderReference: input.orderReference,
+          email: input.email,
+          idempotencyKey,
+        }),
+      },
+      options,
+      (data) => this.assertObject<GuestOrderChallengeResult>(data, 'GuestOrderChallengeResult')
+    );
+  }
+
+  async verifyGuestOrderChallenge(
+    input: GuestOrderVerifyInput,
+    options?: ConnectorRequestOptions
+  ): Promise<GuestOrderVerifyResult> {
+    const idempotencyKey = input.idempotencyKey || generateIdempotencyKey('idem_ord_ver');
+    return this.requestJson(
+      '/orders/lookup/verify',
+      {
+        method: 'POST',
+        headers: {
+          'Idempotency-Key': idempotencyKey,
+        },
+        body: JSON.stringify({
+          challengeId: input.challengeId,
+          orderReference: input.orderReference,
+          email: input.email,
+          code: input.code,
+          idempotencyKey,
+        }),
+      },
+      options,
+      (data) => this.assertObject<GuestOrderVerifyResult>(data, 'GuestOrderVerifyResult')
+    );
+  }
+
+  async getVerifiedGuestOrder(
+    orderReference: string,
     options?: ConnectorRequestOptions
   ): Promise<OrderResult> {
     return this.requestJson(
-      '/orders/lookup',
-      {
-        method: 'POST',
-        body: JSON.stringify(input),
-      },
+      `/orders/lookup/${encodeURIComponent(orderReference.trim().toUpperCase())}`,
+      { method: 'GET' },
       options,
-      (data) => this.assertObject<OrderResult>(data, 'OrderResult')
+      (data) => {
+        const order = this.assertObject<OrderResult>(data, 'OrderResult');
+        assertValidMoney(order.totals.payableTotal, 'OrderResult.totals.payableTotal');
+        return order;
+      }
     );
   }
 
@@ -584,11 +691,15 @@ export class HttpStorefrontConnector implements StorefrontConnector {
     input: SupportInquiryInput,
     options?: ConnectorRequestOptions
   ): Promise<SupportInquiryResult> {
+    const idempotencyKey = input.idempotencyKey || generateIdempotencyKey('idem_support');
     return this.requestJson(
       '/support/inquiries',
       {
         method: 'POST',
-        body: JSON.stringify(input),
+        headers: {
+          'Idempotency-Key': idempotencyKey,
+        },
+        body: JSON.stringify({ ...input, idempotencyKey }),
       },
       options,
       (data) => this.assertObject<SupportInquiryResult>(data, 'SupportInquiryResult')
@@ -600,7 +711,7 @@ export class HttpStorefrontConnector implements StorefrontConnector {
     options?: ConnectorRequestOptions
   ): Promise<ExchangeEligibilityResult> {
     const params = new URLSearchParams({ orderReference: query.orderReference });
-    if (query.emailOrPhone) params.set('emailOrPhone', query.emailOrPhone);
+    if (query.email) params.set('email', query.email);
     return this.requestJson(
       `/exchanges/eligibility?${params.toString()}`,
       { method: 'GET' },
@@ -613,11 +724,15 @@ export class HttpStorefrontConnector implements StorefrontConnector {
     input: SubmitExchangeRequestInput,
     options?: ConnectorRequestOptions
   ): Promise<ExchangeRequestResult> {
+    const idempotencyKey = input.idempotencyKey || generateIdempotencyKey('idem_exchange');
     return this.requestJson(
       '/exchanges',
       {
         method: 'POST',
-        body: JSON.stringify(input),
+        headers: {
+          'Idempotency-Key': idempotencyKey,
+        },
+        body: JSON.stringify({ ...input, idempotencyKey }),
       },
       options,
       (data) => this.assertObject<ExchangeRequestResult>(data, 'ExchangeRequestResult')

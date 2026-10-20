@@ -83,7 +83,15 @@ export class UnavailableStorefrontConnector implements StorefrontConnector {
     throw this.unavailableError();
   }
 
-  async lookupOrder(): Promise<never> {
+  async createGuestOrderChallenge(): Promise<never> {
+    throw this.unavailableError();
+  }
+
+  async verifyGuestOrderChallenge(): Promise<never> {
+    throw this.unavailableError();
+  }
+
+  async getVerifiedGuestOrder(): Promise<never> {
     throw this.unavailableError();
   }
 

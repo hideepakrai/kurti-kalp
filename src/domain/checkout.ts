@@ -56,6 +56,7 @@ export interface CheckoutQuoteInput {
   cartRevision: string;
   shippingAddress?: Partial<PostalAddress>;
   shippingMethodId?: string;
+  idempotencyKey?: string;
 }
 
 export interface CheckoutQuote {
